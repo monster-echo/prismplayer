@@ -31,8 +31,36 @@ env:
   TOOLCHAIN_VERSION: '26.0.0.105-4'
 
 jobs:
+  # 前置验证(ubuntu ~30s):不过就不启动 macOS 构建,避免空跑
+  validate:
+    name: Pre-flight checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check whatsnew
+        run: ./scripts/check-whatsnew.sh
+
+      - name: Check toolchain version sync
+        run: |
+          set -euo pipefail
+          A=$(sed -n 's/^TOOLCHAIN_VERSION="\([^"]*\)"$/\1/p' scripts/pack-toolchain.sh | head -1)
+          B=$(grep -E '^  TOOLCHAIN_VERSION: ' .github/workflows/harmony-release-github-runner.yml | sed "s/.*'\([^']*\)'.*/\1/" | head -1)
+          echo "pack-toolchain.sh=$A  workflow=$B"
+          if [ -z "$A" ] || [ -z "$B" ]; then
+            echo "::error::没解析到 TOOLCHAIN_VERSION,检查解析规则"
+            exit 1
+          fi
+          if [ "$A" != "$B" ]; then
+            echo "::error::TOOLCHAIN_VERSION 不同步:scripts/pack-toolchain.sh=$A,workflow=$B。改镜像后两处要一起改"
+            exit 1
+          fi
+          echo "✅ TOOLCHAIN_VERSION 同步: $A"
+
   build-harmony:
     name: Build HarmonyOS App (macos-15)
+    needs: validate
     runs-on: macos-15
     steps:
       - name: Checkout
