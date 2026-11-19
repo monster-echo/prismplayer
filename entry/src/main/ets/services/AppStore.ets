@@ -11,6 +11,7 @@ import {
   MediaSource,
   RemoteFileEntry,
   SeriesGroup,
+  SubtitleStyleValues,
   SubtitleTrackOption,
   ThemeMode,
   VaultEntry,
@@ -393,6 +394,58 @@ export class AppStore {
   async updateSettings(next: AppSettings): Promise<void> {
     this.settings = next;
     await this.db.saveSettings(next);
+  }
+
+  /**
+   * Centralized write path for subtitle appearance defaults.
+   * Keeps the player style screen and the settings page on one source of truth.
+   */
+  async saveSubtitleDefaults(style: SubtitleStyleValues): Promise<void> {
+    const s = this.settings;
+    await this.updateSettings({
+      themeMode: s.themeMode,
+      subdlApiKey: s.subdlApiKey,
+      cacheBudgetMb: s.cacheBudgetMb,
+      preferHardwareDecode: s.preferHardwareDecode,
+      hardwareSupportedFormats: s.hardwareSupportedFormats,
+      tmdbApiKey: s.tmdbApiKey,
+      tmdbApiHost: s.tmdbApiHost,
+      tmdbImageBase: s.tmdbImageBase,
+      autoSkipIntroSec: s.autoSkipIntroSec,
+      subtitleFontSizeFp: style.fontSizeFp,
+      subtitleLanguageMode: style.languageMode,
+      subtitleBgEnabled: style.bgEnabled,
+      subtitleBgOpacityPercent: style.bgOpacityPercent,
+      subtitleVerticalOffsetVp: style.verticalOffsetVp,
+      burnSubMaskDefault: s.burnSubMaskDefault,
+      proTier: s.proTier,
+      privacyAccepted: s.privacyAccepted,
+      vaultPinCipher: s.vaultPinCipher || ''
+    });
+  }
+
+  async saveBurnSubMaskDefault(enabled: boolean): Promise<void> {
+    const s = this.settings;
+    await this.updateSettings({
+      themeMode: s.themeMode,
+      subdlApiKey: s.subdlApiKey,
+      cacheBudgetMb: s.cacheBudgetMb,
+      preferHardwareDecode: s.preferHardwareDecode,
+      hardwareSupportedFormats: s.hardwareSupportedFormats,
+      tmdbApiKey: s.tmdbApiKey,
+      tmdbApiHost: s.tmdbApiHost,
+      tmdbImageBase: s.tmdbImageBase,
+      autoSkipIntroSec: s.autoSkipIntroSec,
+      subtitleFontSizeFp: s.subtitleFontSizeFp,
+      subtitleLanguageMode: s.subtitleLanguageMode,
+      subtitleBgEnabled: s.subtitleBgEnabled,
+      subtitleBgOpacityPercent: s.subtitleBgOpacityPercent,
+      subtitleVerticalOffsetVp: s.subtitleVerticalOffsetVp,
+      burnSubMaskDefault: enabled,
+      proTier: s.proTier,
+      privacyAccepted: s.privacyAccepted,
+      vaultPinCipher: s.vaultPinCipher || ''
+    });
   }
 
   async setThemeMode(mode: ThemeMode): Promise<void> {

@@ -28,3 +28,6 @@ local.properties
 # IDE / OS
 .idea/
 .DS_Store
+
+# Local release assets — never commit
+release/

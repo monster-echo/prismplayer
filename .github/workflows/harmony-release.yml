@@ -17,6 +17,8 @@ jobs:
   build-harmony:
     name: Build HarmonyOS App
     runs-on: self-hosted
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -103,13 +105,8 @@ jobs:
           rm -f /tmp/prism-release.p12 /tmp/prism-release.cer /tmp/prism-release.p7b
           cp /tmp/prismplayer-${{ steps.version.outputs.version }}.app /tmp/prismplayer-${{ steps.version.outputs.version }}.zip
 
-      - name: Upload artifact for publish job
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-bundle
-          path: /tmp/prismplayer-${{ steps.version.outputs.version }}.app
-          retention-days: 1
-
+      # 两个 job 同在这台 self-hosted runner 上，直接走 /tmp 本地交接，
+      # 不用 actions/artifact（账号存储配额曾被打爆）
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/harmony-v')
         uses: softprops/action-gh-release@v2
@@ -126,11 +123,8 @@ jobs:
       - name: Clean publish directory
         run: rm -rf /tmp/harmony-publish && mkdir -p /tmp/harmony-publish
 
-      - name: Download app artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: app-bundle
-          path: /tmp/harmony-publish
+      - name: Pick up signed app from build job
+        run: cp /tmp/prismplayer-${{ needs.build-harmony.outputs.version }}.app /tmp/harmony-publish/
 
       - name: Compute file metadata
         id: file-meta
@@ -147,6 +141,11 @@ jobs:
       - name: Get AGConnect Access Token (API Client)
         id: auth
         run: |
+          if [ -z "${{ secrets.AGC_CLIENT_ID }}" ] || [ -z "${{ secrets.AGC_CLIENT_SECRET }}" ] || [ -z "${{ secrets.AGC_APP_ID }}" ]; then
+            echo "::warning::AGC_CLIENT_ID / AGC_CLIENT_SECRET / AGC_APP_ID 未配置，跳过 AGC 上传（去 AGC 控制台取值后 gh secret set 再重跑）"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           RESPONSE=$(curl -s -X POST \
             "https://connect-api.cloud.huawei.com/api/oauth2/v1/token" \
             -H "Content-Type: application/json" \
@@ -160,6 +159,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Get Upload URL
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
         id: upload-url
         run: |
           RESPONSE=$(curl -s -w "\n%{http_code}" -X GET \
@@ -184,6 +184,7 @@ jobs:
           echo "$BODY" > /tmp/upload-url-response.json
 
       - name: Upload APP file to AppGallery
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
         id: upload-file
         run: |
           APP_FILE="${{ steps.file-meta.outputs.file }}"
@@ -213,6 +214,7 @@ jobs:
           echo "file_name=${{ steps.file-meta.outputs.name }}" >> "$GITHUB_OUTPUT"
 
       - name: Update App Package Info
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
         id: package-info
         run: |
           RESPONSE=$(curl -s -X PUT \
@@ -237,9 +239,11 @@ jobs:
           echo "package_id=$PACKAGE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Wait for package parsing
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
         run: sleep 60
 
       - name: Query compile status
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
         run: |
           for i in $(seq 1 20); do
             RESPONSE=$(curl -s -X GET \

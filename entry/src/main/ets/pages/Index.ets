@@ -177,7 +177,6 @@ struct Index {
               Image($r('app.media.ic_brand_prism'))
                 .width(34)
                 .height(34)
-                .borderRadius(10)
 
               if (!this.sidebarCollapsed) {
                 Column({ space: 1 }) {

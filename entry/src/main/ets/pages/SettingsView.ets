@@ -149,7 +149,7 @@ export struct SettingsView {
             Divider().color($r('app.color.divider')).margin({ left: 62 })
             this.settingNavRow(
               $r('app.media.ic_file_subtitle'),
-              '字幕外观默认设置',
+              '字幕默认样式',
               `${this.store.settings.subtitleFontSizeFp} fp`,
               () => this.onOpenSubtitlePrefs()
             )

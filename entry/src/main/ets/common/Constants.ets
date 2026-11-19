@@ -51,10 +51,10 @@ export class AppConstants {
   static readonly IAP_PRO_FAMILY: string = 'prism_pro_family_68';
 
   // 内置字幕源（SubDL）访问凭据，应用内不展示
-  static readonly SUBDL_API_KEY: string = '';
+  static readonly SUBDL_API_KEY: string = 'subdl_ZqYY18HnlHcvH1y7fnslrxVOFMtFNHECdkXOrm0pGh0';
 
   // 内置字幕源（OpenSubtitles）访问凭据，应用内不展示；账号开通 API 权限前该源自动跳过
-  static readonly OPENSUBTITLES_API_KEY: string = '';
+  static readonly OPENSUBTITLES_API_KEY: string = '5ed03aee65c5d26e0a0152a10dca2bb3';
   static readonly OPENSUBTITLES_USER_TOKEN: string = 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI1ZWQwM2FlZTY1YzVkMjZlMGEwMTUyYTEwZGNhMmJiMyIsIm5iZiI6MTc5NTA5NDYxOS4yMTEsInN1YiI6IjZhZmVmODViZjU4YzAyNmY5MTdmZTZkNCIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.lbgEHnBuPZb01Ze16RTvFGjnTJ6JY0ROaN-k-0ErZVI';
 
   // 合规信息：上架华为应用市场前请替换为真实联系邮箱，并在 AGC 后台填写对应隐私政策网页版 URL
@@ -75,7 +75,7 @@ export const PC_SHORTCUTS: ShortcutTip[] = [
   { keys: 'F / 双击画面', action: '切换全屏影院模式' },
   { keys: 'Esc', action: '退出全屏或关闭浮层' },
   { keys: '[ / ]', action: '降低 / 提高播放倍速' },
-  { keys: 'S', action: '打开字幕与延时调节面板' },
+  { keys: 'S', action: '打开字幕中心' },
   { keys: 'A', action: '打开音轨切换面板' },
   { keys: 'I', action: '显示 / 隐藏技术统计 OSD' },
   { keys: 'M', action: '静音 / 取消静音' }

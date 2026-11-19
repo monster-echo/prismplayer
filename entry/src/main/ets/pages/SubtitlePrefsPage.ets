@@ -1,15 +1,24 @@
-import { AppSettings } from '../common/Types';
+import { SubtitleLanguageMode, SubtitleStyleValues } from '../common/Types';
 import { NavHeaderBar } from '../components/NavHeaderBar';
+import { SubtitleStyleEditor } from '../components/subtitle/SubtitleStyleEditor';
 import { AppStore } from '../services/AppStore';
+import { SubtitleSession } from '../services/SubtitleSession';
 
+/**
+ * Settings entry: subtitle appearance defaults only.
+ * Shares the exact editor used by the in-player "字幕样式" screen, so there is one
+ * implementation of font size / background / opacity / position / bilingual filtering.
+ */
 @Entry
 @ComponentV2
 struct SubtitlePrefsPage {
   @Local store: AppStore = AppStore.getInstance();
+  @Local session: SubtitleSession = SubtitleSession.getInstance();
   @Local fontSizeFp: number = 20;
   @Local bgEnabled: boolean = true;
   @Local bgOpacityPercent: number = 35;
   @Local verticalOffsetVp: number = 0;
+  @Local languageMode: SubtitleLanguageMode = 'all';
   @Local savedTip: string = '';
 
   aboutToAppear(): void {
@@ -18,6 +27,7 @@ struct SubtitlePrefsPage {
     this.bgEnabled = s.subtitleBgEnabled;
     this.bgOpacityPercent = s.subtitleBgOpacityPercent;
     this.verticalOffsetVp = s.subtitleVerticalOffsetVp;
+    this.languageMode = s.subtitleLanguageMode;
   }
 
   onBackPress(): boolean {
@@ -25,36 +35,18 @@ struct SubtitlePrefsPage {
     return true;
   }
 
-  private previewBgColor(): string | Color {
-    if (!this.bgEnabled) return Color.Transparent;
-    const clamped = Math.min(100, Math.max(0, Math.round(this.bgOpacityPercent)));
-    const alpha = Math.round(clamped * 255 / 100).toString(16).padStart(2, '0');
-    return `#${alpha}000000`;
-  }
-
   private async persist(): Promise<void> {
-    const s = this.store.settings;
-    const next: AppSettings = {
-      themeMode: s.themeMode,
-      cacheBudgetMb: s.cacheBudgetMb,
-      preferHardwareDecode: s.preferHardwareDecode,
-      hardwareSupportedFormats: s.hardwareSupportedFormats,
-      tmdbApiKey: s.tmdbApiKey,
-      tmdbApiHost: s.tmdbApiHost,
-      tmdbImageBase: s.tmdbImageBase,
-      autoSkipIntroSec: s.autoSkipIntroSec,
-      subtitleFontSizeFp: this.fontSizeFp,
-      subtitleLanguageMode: s.subtitleLanguageMode,
-      subtitleBgEnabled: this.bgEnabled,
-      subtitleBgOpacityPercent: this.bgOpacityPercent,
-      subtitleVerticalOffsetVp: this.verticalOffsetVp,
-      burnSubMaskDefault: s.burnSubMaskDefault,
-      subdlApiKey: s.subdlApiKey,
-      proTier: s.proTier,
-      privacyAccepted: s.privacyAccepted,
-      vaultPinCipher: s.vaultPinCipher || ''
+    const style: SubtitleStyleValues = {
+      fontSizeFp: this.fontSizeFp,
+      bgEnabled: this.bgEnabled,
+      bgOpacityPercent: this.bgOpacityPercent,
+      verticalOffsetVp: this.verticalOffsetVp,
+      languageMode: this.languageMode
     };
-    await this.store.updateSettings(next);
+    await this.store.saveSubtitleDefaults(style);
+    if (this.session.active) {
+      this.session.syncStyleFromPreferences();
+    }
     this.savedTip = '已保存';
     setTimeout(() => { this.savedTip = ''; }, 1400);
   }
@@ -62,105 +54,43 @@ struct SubtitlePrefsPage {
   build() {
     Column() {
       NavHeaderBar({
-        title: '字幕外观默认设置',
-        subtitle: this.savedTip || '统一设置默认字号、背景底框与显示位置',
+        title: '字幕默认样式',
+        subtitle: this.savedTip || '新打开的视频会沿用这里的字号、底框与位置',
         onBack: () => this.getUIContext().getRouter().back()
       })
 
       Scroll() {
         Column({ space: 16 }) {
-          // Live Preview
-          Column({ space: 4 }) {
-            Column({ space: 2 }) {
-              Text('海边的曼彻斯特')
-                .fontSize(this.fontSizeFp)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(Color.White)
-                .textShadow({ radius: 5, color: '#E6000000', offsetX: 0, offsetY: 1 })
-                .textAlign(TextAlign.Center)
-              Text('Manchester by the Sea')
-                .fontSize(Math.max(12, Math.round(this.fontSizeFp * 0.78)))
-                .fontColor('#E5E7EB')
-                .textShadow({ radius: 5, color: '#E6000000', offsetX: 0, offsetY: 1 })
-                .textAlign(TextAlign.Center)
+          SubtitleStyleEditor({
+            fontSizeFp: this.fontSizeFp,
+            bgEnabled: this.bgEnabled,
+            bgOpacityPercent: this.bgOpacityPercent,
+            verticalOffsetVp: this.verticalOffsetVp,
+            languageMode: this.languageMode,
+            showLanguageFilter: true,
+            onFontSizeChange: (v: number) => { this.fontSizeFp = v; },
+            onFontSizeCommit: () => this.persist(),
+            onBgToggle: (v: boolean) => {
+              this.bgEnabled = v;
+              this.persist();
+            },
+            onBgOpacityChange: (v: number) => { this.bgOpacityPercent = v; },
+            onBgOpacityCommit: () => this.persist(),
+            onOffsetChange: (v: number) => { this.verticalOffsetVp = v; },
+            onOffsetCommit: () => this.persist(),
+            onLanguageMode: (m: SubtitleLanguageMode) => {
+              this.languageMode = m;
+              this.persist();
             }
-            .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-            .borderRadius(8)
-            .backgroundColor(this.previewBgColor())
-          }
-          .width('100%')
-          .padding({ top: 28, bottom: 28, left: 16, right: 16 })
-          .borderRadius(12)
-          .backgroundColor('#0F1117')
-          .border({ width: 0.7, color: $r('app.color.border_subtle') })
+          })
 
-          Column({ space: 14 }) {
-            Row() {
-              Text('默认字号').fontSize(14).fontColor($r('app.color.text_primary'))
-              Blank()
-              Text(`${this.fontSizeFp} fp`).fontSize(13).fontColor($r('app.color.text_secondary'))
-            }.width('100%')
-
-            Slider({ value: this.fontSizeFp, min: 14, max: 32, step: 2 })
-              .width('100%')
-              .selectedColor($r('app.color.accent_blue'))
-              .onChange((val: number) => {
-                this.fontSizeFp = Math.round(val);
-                this.persist();
-              })
-
-            Divider().color($r('app.color.divider'))
-
-            Row() {
-              Text('字幕半透明底框').fontSize(14).fontColor($r('app.color.text_primary'))
-              Blank()
-              Toggle({ type: ToggleType.Switch, isOn: this.bgEnabled })
-                .selectedColor($r('app.color.accent_blue'))
-                .onChange((v: boolean) => {
-                  this.bgEnabled = v;
-                  this.persist();
-                })
-            }.width('100%')
-
-            if (this.bgEnabled) {
-              Row() {
-                Text('底框不透明度').fontSize(13).fontColor($r('app.color.text_secondary'))
-                Blank()
-                Text(`${this.bgOpacityPercent}%`).fontSize(13).fontColor($r('app.color.text_secondary'))
-              }.width('100%')
-
-              Slider({ value: this.bgOpacityPercent, min: 10, max: 85, step: 5 })
-                .width('100%')
-                .selectedColor($r('app.color.accent_blue'))
-                .onChange((val: number) => {
-                  this.bgOpacityPercent = Math.round(val);
-                  this.persist();
-                })
-            }
-
-            Divider().color($r('app.color.divider'))
-
-            Row() {
-              Text('底部抬升偏移').fontSize(14).fontColor($r('app.color.text_primary'))
-              Blank()
-              Text(`${this.verticalOffsetVp} vp`).fontSize(13).fontColor($r('app.color.text_secondary'))
-            }.width('100%')
-
-            Slider({ value: this.verticalOffsetVp, min: 0, max: 80, step: 4 })
-              .width('100%')
-              .selectedColor($r('app.color.accent_blue'))
-              .onChange((val: number) => {
-                this.verticalOffsetVp = Math.round(val);
-                this.persist();
-              })
-          }
-          .width('100%')
-          .padding(16)
-          .borderRadius(12)
-          .backgroundColor($r('app.color.bg_elevated'))
-          .border({ width: 0.7, color: $r('app.color.border_subtle') })
+          Text('播放中也可以从播放器「字幕」入口打开样式页；两处编辑的是同一套默认值，不会再各存一份。')
+            .fontSize(10)
+            .lineHeight(16)
+            .fontColor($r('app.color.text_muted'))
+            .padding({ left: 4, right: 4 })
         }
-        .padding({ left: 18, right: 18, top: 14, bottom: 32 })
+        .padding({ left: 18, right: 18, top: 10, bottom: 36 })
         .width('100%')
       }
       .layoutWeight(1)

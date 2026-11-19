@@ -7,7 +7,6 @@
     "pages/SourceBrowserPage",
     "pages/SourceFormPage",
     "pages/ProStorePage",
-    "pages/PlaybackPrefsPage",
     "pages/DecoderPrefsPage",
     "pages/CachePrefsPage",
     "pages/SubtitlePrefsPage",

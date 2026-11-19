@@ -73,7 +73,6 @@ export struct LibraryView {
               Image($r('app.media.ic_brand_prism'))
                 .width(34)
                 .height(34)
-                .borderRadius(9)
             }
             Column({ space: 2 }) {
               Text('媒体影库')
@@ -87,6 +86,8 @@ export struct LibraryView {
               )
                 .fontSize(12)
                 .fontColor(this.store.isScanning ? $r('app.color.accent_blue') : $r('app.color.text_muted'))
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
             }.alignItems(HorizontalAlign.Start)
           }
           .layoutWeight(1)

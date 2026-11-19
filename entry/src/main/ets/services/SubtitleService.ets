@@ -86,25 +86,27 @@ export class SubtitleService {
     query: string,
     videoFileName: string = '',
     langFilter: string = 'all',
-    subdlApiKey: string = ''
+    subdlApiKey: string = '',
+    seasonNo: number = 0,
+    episodeNo: number = 0
   ): Promise<OnlineSubtitleResult[]> {
     const cleanQ = (query || '').trim();
     if (!cleanQ) return [];
     const merged: OnlineSubtitleResult[] = [];
-    const subdl = await SubtitleService.searchSubdl(cleanQ, langFilter, subdlApiKey).catch((e: Error) => {
+    const subdl = await SubtitleService.searchSubdl(cleanQ, langFilter, subdlApiKey, seasonNo, episodeNo).catch((e: Error) => {
       hilog.error(0x0001, 'PrismSub', 'subdl error %{public}s', e.message);
       return [] as OnlineSubtitleResult[];
     });
     for (let i = 0; i < subdl.length; i++) merged.push(subdl[i]);
-    const osResults = await SubtitleService.searchOpenSubtitlesProvider(cleanQ, langFilter).catch(() => [] as OnlineSubtitleResult[]);
+    const osResults = await SubtitleService.searchOpenSubtitlesProvider(cleanQ, langFilter, seasonNo, episodeNo).catch(() => [] as OnlineSubtitleResult[]);
     for (let i = 0; i < osResults.length; i++) merged.push(osResults[i]);
     const zimuku = await SubtitleService.searchZimuku(cleanQ).catch((e: Error) => {
       hilog.error(0x0001, 'PrismSub', 'zimuku error %{public}s', e.message);
       return [] as OnlineSubtitleResult[];
     });
     for (let i = 0; i < zimuku.length; i++) merged.push(zimuku[i]);
-    hilog.info(0x0001, 'PrismSub', 'searchAll q=%{public}s subdl=%{public}d os=%{public}d zimuku=%{public}d', cleanQ, subdl.length, osResults.length, zimuku.length);
-    return SubtitleService.rankSubtitleResults(merged, videoFileName, cleanQ);
+    hilog.info(0x0001, 'PrismSub', 'searchAll q=%{public}s se=%{public}d-%{public}d subdl=%{public}d os=%{public}d zimuku=%{public}d', cleanQ, seasonNo, episodeNo, subdl.length, osResults.length, zimuku.length);
+    return SubtitleService.rankSubtitleResults(merged, videoFileName, cleanQ, langFilter);
   }
 
   /** 兼容旧调用方：等价于 searchAllSubtitles。 */
@@ -112,13 +114,20 @@ export class SubtitleService {
     return SubtitleService.searchAllSubtitles(query, '', langFilter);
   }
 
-  private static async searchSubdl(query: string, langFilter: string, apiKey: string = ''): Promise<OnlineSubtitleResult[]> {
+  private static async searchSubdl(
+    query: string,
+    langFilter: string,
+    apiKey: string = '',
+    seasonNo: number = 0,
+    episodeNo: number = 0
+  ): Promise<OnlineSubtitleResult[]> {
     const results: OnlineSubtitleResult[] = [];
     const langParam = langFilter !== 'all' ? `&languages=${encodeURIComponent(langFilter.toUpperCase())}` : '';
+    const seParam = seasonNo > 0 && episodeNo > 0 ? `&season_number=${seasonNo}&episode_number=${episodeNo}` : '';
     // 用户在设置中自定义的 Key 优先；未配置时使用内置凭据（应用内不展示）
     const effectiveKey = apiKey.trim() || AppConstants.SUBDL_API_KEY;
     const keyParam = `&api_key=${encodeURIComponent(effectiveKey)}`;
-    const subdlUrl = `https://api.subdl.com/api/v1/subtitles?film_name=${encodeURIComponent(query)}${langParam}${keyParam}&subs_per_page=12`;
+    const subdlUrl = `https://api.subdl.com/api/v1/subtitles?film_name=${encodeURIComponent(query)}${seParam}${langParam}${keyParam}&subs_per_page=20`;
     const req = new rcp.Request(subdlUrl, 'GET', {
       'User-Agent': 'PrismPlayer/1.0',
       'Accept': 'application/json'
@@ -157,10 +166,16 @@ export class SubtitleService {
    * OpenSubtitles 官方源：全球最大的多语言字幕库，query 走英文片名效果最佳。
    * Key 无效/限流时返回 "You cannot consume this service"，静默跳过该源。
    */
-  private static async searchOpenSubtitlesProvider(query: string, langFilter: string): Promise<OnlineSubtitleResult[]> {
+  private static async searchOpenSubtitlesProvider(
+    query: string,
+    langFilter: string,
+    seasonNo: number = 0,
+    episodeNo: number = 0
+  ): Promise<OnlineSubtitleResult[]> {
     const results: OnlineSubtitleResult[] = [];
     const langParam = langFilter !== 'all' ? `&languages=${encodeURIComponent(langFilter)}` : '';
-    const url = `https://api.opensubtitles.com/api/v1/subtitles?query=${encodeURIComponent(query)}${langParam}&page_size=10`;
+    const seParam = seasonNo > 0 && episodeNo > 0 ? `&season_number=${seasonNo}&episode_number=${episodeNo}` : '';
+    const url = `https://api.opensubtitles.com/api/v1/subtitles?query=${encodeURIComponent(query)}${seParam}${langParam}&page_size=20`;
     const req = new rcp.Request(url, 'GET', {
       'Api-Key': AppConstants.OPENSUBTITLES_API_KEY,
       'Authorization': `Bearer ${AppConstants.OPENSUBTITLES_USER_TOKEN}`,
@@ -252,18 +267,33 @@ export class SubtitleService {
     return results;
   }
 
+  /** 语言筛选：只过滤已知语言；未知语言保留，避免误删。 */
+  private static matchesLanguageFilter(language: string, langFilter: string): boolean {
+    if (langFilter === 'all') return true;
+    const lang = (language || '').toLowerCase();
+    if (!lang || lang === 'und' || lang.startsWith('track_')) return true;
+    if (lang === langFilter) return true;
+    // 双语字幕同时满足中文 / 英文筛选
+    if (lang === 'zh-en' && (langFilter === 'zh' || langFilter === 'en')) return true;
+    return false;
+  }
+
   /** 季集感知评分：季集 token 命中 > 中文/双语 > ASS 特效格式 > 标题词重叠。 */
   static rankSubtitleResults(
     results: OnlineSubtitleResult[],
     videoFileName: string,
-    query: string
+    query: string,
+    langFilter: string = 'all'
   ): OnlineSubtitleResult[] {
     const videoLower = (videoFileName || '').toLowerCase();
     const seMatch = videoLower.match(/s\d{1,2}e\d{1,3}/);
     const seToken = seMatch ? seMatch[0] : '';
     const qTokens = query.toLowerCase().split(/[^a-z0-9\u4e00-\u9fa5]+/).filter(t => t.length > 1);
 
-    const scored: ScoredSubtitle[] = results.map((r: OnlineSubtitleResult): ScoredSubtitle => {
+    const candidates = langFilter === 'all'
+      ? results
+      : results.filter((r: OnlineSubtitleResult) => SubtitleService.matchesLanguageFilter(r.language, langFilter));
+    const scored: ScoredSubtitle[] = candidates.map((r: OnlineSubtitleResult): ScoredSubtitle => {
       const n = r.title.toLowerCase();
       let score = 0;
       if (seToken && n.includes(seToken)) score += 4;

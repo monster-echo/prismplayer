@@ -239,6 +239,34 @@ export interface DecodeRoutingDecision {
 
 export type SubtitleLanguageMode = 'all' | 'zh' | 'en';
 
+/** In-player subtitle screen routes: one screen per subtitle responsibility. */
+export type SubtitlePageRoute = 'none' | 'hub' | 'tracks' | 'style' | 'sync' | 'online' | 'assist' | 'mask';
+
+/** Persisted subtitle appearance defaults, shared by the player style screen and the settings page. */
+export interface SubtitleStyleValues {
+  fontSizeFp: number;
+  bgEnabled: boolean;
+  bgOpacityPercent: number;
+  verticalOffsetVp: number;
+  languageMode: SubtitleLanguageMode;
+}
+
+export interface SubtitleSearchLanguage {
+  code: string;
+  label: string;
+}
+
+export const SUBTITLE_SEARCH_LANGUAGES: SubtitleSearchLanguage[] = [
+  { code: 'all', label: '全部语言' },
+  { code: 'zh', label: '中文' },
+  { code: 'en', label: '英文' },
+  { code: 'ja', label: '日文' },
+  { code: 'ko', label: '韩文' },
+  { code: 'fr', label: '法文' },
+  { code: 'de', label: '德文' },
+  { code: 'es', label: '西班牙语' }
+];
+
 export type ThemeMode = 'system' | 'light' | 'dark';
 
 export interface AppSettings {

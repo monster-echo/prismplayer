@@ -1,9 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
-import { fileIo as fs, picker } from '@kit.CoreFileKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { KeyCode } from '@kit.InputKit';
-import { util } from '@kit.ArkTS';
 import {
   IjkMediaPlayer,
   OnCompletionListener,
@@ -18,24 +17,28 @@ import { ThemeManager } from '../common/ThemeManager';
 import {
   AspectMode,
   DecoderEngineMode,
-  ExternalSubtitleTrack,
   MediaItem,
   MediaSource,
   PlayerLaunchParams,
   PlayerTrackItem,
   SubtitleCue,
-  SubtitleLangTag,
-  SubtitleLanguageMode
+  SubtitlePageRoute
 } from '../common/Types';
 import { SubtitleOverlay } from '../components/SubtitleOverlay';
 import { SubtitleMaskBand } from '../components/SubtitleMaskBand';
+import { SubtitleAssistPage } from '../components/subtitle/SubtitleAssistPage';
+import { SubtitleHubPage } from '../components/subtitle/SubtitleHubPage';
+import { SubtitleMaskPage } from '../components/subtitle/SubtitleMaskPage';
+import { SubtitleOnlinePage } from '../components/subtitle/SubtitleOnlinePage';
+import { SubtitleStylePage } from '../components/subtitle/SubtitleStylePage';
+import { SubtitleSyncPage } from '../components/subtitle/SubtitleSyncPage';
+import { SubtitleTracksPage } from '../components/subtitle/SubtitleTracksPage';
 import { computePictureRect, PictureRect } from '../common/VideoLayout';
 import { AppStore } from '../services/AppStore';
 import { AVSessionService } from '../services/AVSessionService';
 import { BurnSubDetector } from '../services/BurnSubDetector';
 import { RemoteSourceClient } from '../services/RemoteSourceClient';
-import { SubtitleEngine } from '../services/SubtitleEngine';
-import { OnlineSubtitleResult, SubtitleService } from '../services/SubtitleService';
+import { SubtitleSession, SubtitleSessionHost } from '../services/SubtitleSession';
 
 interface ResolvedPlaybackUrl {
   url: string;
@@ -90,7 +93,8 @@ struct PlayerPage {
   @Local showControls: boolean = true;
   @Local screenLocked: boolean = false;
   @Local isFullscreen: boolean = false;
-  @Local drawerTab: 'none' | 'subtitle' | 'settings' = 'none';
+  @Local drawerTab: 'none' | 'settings' = 'none';
+  @Local subtitlePage: SubtitlePageRoute = 'none';
   @Local showStatsOsd: boolean = false;
   @Local errorBanner: string = '';
   @Local toastText: string = '';
@@ -103,26 +107,12 @@ struct PlayerPage {
 
   @Local tracks: PlayerTrackItem[] = [];
   @Local selectedAudioTrack: number = -1;
-  @Local selectedNativeSubtitleTrack: number = -1;
   @Local ijkAudioStreams: IjkAudioStream[] = [];
   @Local selectedIjkAudioStream: number = -1;
-  @Local externalTracks: ExternalSubtitleTrack[] = [];
-  @Local enabledTrackIds: string[] = [];
-  @Local subtitleEnabled: boolean = true;
-  @Local subtitleDelayMs: number = 0;
-  @Local subtitleFontFp: number = 20;
-  @Local languageMode: SubtitleLanguageMode = 'all';
-  @Local subtitleBgEnabled: boolean = true;
-  @Local subtitleBgOpacity: number = 35;
-  @Local subtitleOffsetVp: number = 0;
   @Local activeCues: SubtitleCue[] = [];
-  // Burned-in subtitle occlusion (English-learning mask): band normalized against picture area
-  @Local maskEnabled: boolean = false;
-  @Local maskYTop: number = 0.78;
-  @Local maskYBottom: number = 0.96;
+  // Burned-in subtitle occlusion drag interaction stays player-owned; values live in SubtitleSession.
   @Local maskAdjusting: boolean = false;
   @Local maskPeeking: boolean = false;
-  @Local detectingMask: boolean = false;
 
   @Local proxyHitRate: string = '0%';
   @Local proxyBytesText: string = '0 MB';
@@ -131,12 +121,8 @@ struct PlayerPage {
   @Local videoSavedLocal: boolean = false;
   @Local savingVideo: boolean = false;
   @Local isFavorite: boolean = false;
-  @Local subtitleTranslateEnabled: boolean = false;
-  @Local subtitleTtsEnabled: boolean = false;
-  @Local subSearchQuery: string = '';
-  @Local subSearching: boolean = false;
-  @Local autoMatching: boolean = false;
-  @Local subSearchResults: OnlineSubtitleResult[] = [];
+
+  @Local subtitle: SubtitleSession = SubtitleSession.getInstance();
 
   private nativePlayerId: number = 0;
   private nativeSurfaceReady: boolean = false;
@@ -154,10 +140,7 @@ struct PlayerPage {
   private panZone: 'none' | 'seek' | 'vol' | 'bright' = 'none';
   private enteredInPortrait: boolean = true;
   private resumeAudioTrackIndex: number = -1;
-  private resumeSubtitleTrackIndex: number = -1;
   private appliedResumeTracks: boolean = false;
-  // False until the user explicitly configures the mask for this video (persisted with -1 sentinel before that)
-  private maskConfigured: boolean = false;
 
   private tickTimer: number = -1;
   private hideControlsTimer: number = -1;
@@ -174,7 +157,6 @@ struct PlayerPage {
       this.durationMs = rawParams.item.durationMs || 0;
       this.videoSavedLocal = rawParams.item.streamUrl.startsWith('/') || rawParams.item.streamUrl.startsWith('file://');
       this.isFavorite = rawParams.item.isFavorite === true;
-      this.subSearchQuery = rawParams.item.seriesTitle || rawParams.item.title || '';
     }
     if (this.mediaItem) {
       const route = Formatters.selectDecodeEngine(
@@ -191,51 +173,61 @@ struct PlayerPage {
       // B 站 CDN 校验 Referer，只有 ijk 可注入自定义头，强制软解引擎
       this.engineMode = 'ffmpeg_sw';
     }
-    this.subtitleFontFp = this.store.settings.subtitleFontSizeFp;
-    this.languageMode = this.store.settings.subtitleLanguageMode;
-    this.subtitleBgEnabled = this.store.settings.subtitleBgEnabled;
-    this.subtitleBgOpacity = this.store.settings.subtitleBgOpacityPercent;
-    this.subtitleOffsetVp = this.store.settings.subtitleVerticalOffsetVp;
+
+    // Launch params only override subtitle state when explicitly meaningful; the session
+    // falls back to the watch record (delay / embedded track / mask) on its own.
+    let initialSubtitleDelay: number | undefined = undefined;
+    let initialSubtitleTrack: number | undefined = undefined;
     if (rawParams) {
       this.resumeAudioTrackIndex = rawParams.audioTrackIndex !== undefined ? rawParams.audioTrackIndex : -1;
-      this.resumeSubtitleTrackIndex = rawParams.subtitleTrackIndex !== undefined ? rawParams.subtitleTrackIndex : -1;
+      if (rawParams.subtitleTrackIndex !== undefined && rawParams.subtitleTrackIndex >= 0) {
+        initialSubtitleTrack = rawParams.subtitleTrackIndex;
+      }
       if (rawParams.subtitleDelayMs !== undefined && rawParams.subtitleDelayMs !== 0) {
-        this.subtitleDelayMs = rawParams.subtitleDelayMs;
+        initialSubtitleDelay = rawParams.subtitleDelayMs;
       }
       if (rawParams.playbackRate !== undefined && rawParams.playbackRate > 0) {
         this.playbackRate = rawParams.playbackRate;
       }
     }
-    // Resume memory: fall back to the saved watch record so every launch path restores tracks / rate / delay
+    // Resume memory: fall back to the saved watch record for audio track and playback rate.
     if (this.mediaItem) {
       const hist = this.store.getHistoryForItem(this.mediaItem.id);
       if (hist && !hist.finished) {
         this.resumeAudioTrackIndex = this.resumeAudioTrackIndex >= 0 ? this.resumeAudioTrackIndex : hist.audioTrackIndex;
-        this.resumeSubtitleTrackIndex = this.resumeSubtitleTrackIndex >= 0 ? this.resumeSubtitleTrackIndex : hist.subtitleTrackIndex;
-        if (!(rawParams && rawParams.subtitleDelayMs !== undefined) && hist.subtitleDelayMs !== 0) {
-          this.subtitleDelayMs = hist.subtitleDelayMs;
-        }
         if (!(rawParams && rawParams.playbackRate !== undefined) && hist.playbackRate > 0) {
           this.playbackRate = hist.playbackRate;
         }
       }
-      // Burned-in subtitle mask: explicit per-video config wins, otherwise apply the global default
-      if (hist && hist.maskEnabled >= 0) {
-        this.maskConfigured = true;
-        this.maskEnabled = hist.maskEnabled === 1;
-        if (hist.maskYTop >= 0 && hist.maskYTop < 1 && hist.maskYBottom > hist.maskYTop && hist.maskYBottom <= 1) {
-          this.maskYTop = hist.maskYTop;
-          this.maskYBottom = hist.maskYBottom;
-        }
-      } else {
-        this.maskEnabled = this.store.settings.burnSubMaskDefault;
-      }
+      this.attachSubtitleSession(initialSubtitleDelay, initialSubtitleTrack);
     }
 
     this.store.ensureNativeProxy();
-    this.loadInitialSubtitle();
     this.startTickLoop();
     this.scheduleHideControls();
+  }
+
+  private attachSubtitleSession(delayOverride: number | undefined, trackOverride: number | undefined): void {
+    if (!this.mediaItem) return;
+    const host = new SubtitleSessionHost();
+    host.isLocalPlayback = (): boolean => this.isLocalPlayback();
+    host.getPlaybackDurationMs = (): number => this.durationMs;
+    host.getCacheDir = (): string => {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      return ctx ? ctx.cacheDir : '';
+    };
+    host.applyEmbeddedTrack = (index: number): boolean => this.applyEmbeddedTrackSelection(index);
+    host.clearEmbeddedTrack = (index: number): void => this.clearEmbeddedTrackSelection(index);
+    host.syncWatchProgress = (): void => this.persistProgressNow();
+    this.subtitle.attach(
+      host,
+      this.mediaItem,
+      this.mediaSource,
+      this.engineMode === 'native_hw',
+      delayOverride,
+      trackOverride
+    );
+    this.activeCues = [];
   }
 
   aboutToDisappear(): void {
@@ -246,7 +238,7 @@ struct PlayerPage {
     }
     this.persistProgressNow();
     this.teardownPlayers();
-    SubtitleService.stopSpeaking();
+    this.subtitle.detach();
     this.avSession.release();
     this.setWindowKeepScreenOn(false);
     this.restoreWindowDefaults();
@@ -356,201 +348,6 @@ struct PlayerPage {
     this.scheduleHideControls();
   }
 
-  private appendExternalTrack(track: ExternalSubtitleTrack): void {
-    if (this.externalTracks.some(t => t.id === track.id)) return;
-    const next: ExternalSubtitleTrack[] = this.externalTracks.slice();
-    next.push(track);
-    this.externalTracks = next;
-    if (this.enabledTrackIds.indexOf(track.id) < 0) {
-      const nextIds = this.enabledTrackIds.slice();
-      nextIds.push(track.id);
-      this.enabledTrackIds = nextIds;
-    }
-  }
-
-  private toggleTrackEnabled(id: string): void {
-    const idx = this.enabledTrackIds.indexOf(id);
-    const nextIds = this.enabledTrackIds.slice();
-    if (idx >= 0) {
-      nextIds.splice(idx, 1);
-    } else {
-      nextIds.push(id);
-    }
-    this.enabledTrackIds = nextIds;
-  }
-
-  private removeExternalTrack(id: string): void {
-    this.externalTracks = this.externalTracks.filter(t => t.id !== id);
-    this.enabledTrackIds = this.enabledTrackIds.filter(t => t !== id);
-  }
-
-  private langBadge(tag: SubtitleLangTag): string {
-    if (tag === 'zh') return '中文';
-    if (tag === 'en') return '英文';
-    if (tag === 'zh-en') return '双语';
-    return '未知';
-  }
-
-  private async loadInitialSubtitle(overrideSubUrl?: string): Promise<void> {
-    // 旧条目没有扫描期字幕关联时，播放中惰性补探测同目录 sidecar 字幕并写回库
-    if (!overrideSubUrl && this.mediaItem && !(this.mediaItem.subtitleTracks && this.mediaItem.subtitleTracks.length > 0)) {
-      const probed = await this.store.probeSubtitlesForItem(this.mediaItem, this.mediaSource);
-      if (probed.length > 0) {
-        this.mediaItem.subtitleTracks = probed;
-      }
-    }
-    if (!overrideSubUrl && this.mediaItem && this.mediaItem.subtitleTracks && this.mediaItem.subtitleTracks.length > 0) {
-      const tracks = this.mediaItem.subtitleTracks;
-      for (let i = 0; i < tracks.length; i++) {
-        const t = tracks[i];
-        if (!t.url) continue;
-        try {
-          const content = await RemoteSourceClient.fetchText(t.url, this.mediaSource);
-          const parsed = SubtitleEngine.parse(content, t.label, t.url);
-          if (i === 0) {
-            this.appendExternalTrack(parsed);
-          } else if (!this.externalTracks.some(x => x.id === parsed.id)) {
-            const next = this.externalTracks.slice();
-            next.push(parsed);
-            this.externalTracks = next;
-          }
-        } catch (_e) {
-          // Non-fatal if an individual remote subtitle track fails
-        }
-      }
-      return;
-    }
-
-    const subUrl = overrideSubUrl || (this.mediaItem ? this.mediaItem.subtitleUrl : '');
-    if (!subUrl) return;
-    if (subUrl.startsWith('builtin://')) {
-      const content = this.store.getBuiltInDemoSubtitle(subUrl);
-      if (content) {
-        this.appendExternalTrack(SubtitleEngine.parse(content, '内置演示特效字幕', subUrl));
-      }
-      return;
-    }
-    try {
-      const content = await RemoteSourceClient.fetchText(subUrl, this.mediaSource);
-      const slash = subUrl.lastIndexOf('/');
-      const name = slash >= 0 ? decodeURIComponent(subUrl.substring(slash + 1)) : '外挂字幕';
-      this.appendExternalTrack(SubtitleEngine.parse(content, name, subUrl));
-    } catch (_e) {
-      // Non-fatal if subtitle fetch fails
-    }
-  }
-
-  private async autoMatchSubtitle(): Promise<void> {
-    if (this.autoMatching) return;
-    const item = this.mediaItem;
-    if (!item) return;
-    this.autoMatching = true;
-    try {
-      // 查询词优先用文件名解析出的干净片名（去掉「第一季/第 1 集/1080p」等噪声，
-      // 集数信息由季集感知评分处理），命中率远高于带集数的刮削标题。
-      const fileName = item.fileName || '';
-      let query = (this.subSearchQuery || item.title).trim();
-      if (fileName) {
-        const parsed = Formatters.parseMediaFilename(fileName);
-        if (parsed.cleanTitle && parsed.cleanTitle.length >= 2) {
-          query = parsed.cleanTitle;
-        }
-      }
-      // 中文/刮削标题在 SubDL（英文库）命中率低：先经 TMDB（zh-CN）解析出英文原名再查询
-      if (this.store.settings.tmdbApiKey) {
-        try {
-          const cands = await this.store.searchScrapeCandidates(item, query);
-          if (cands.length > 0 && cands[0].originalTitle && cands[0].originalTitle.length >= 2) {
-            query = cands[0].originalTitle;
-          }
-        } catch (_e) {
-          // TMDB 解析失败则退回原标题查询
-        }
-      }
-      const results = await SubtitleService.searchAllSubtitles(query, fileName, 'all', this.store.settings.subdlApiKey);
-      if (results.length === 0) {
-        this.showBriefToast('未找到可匹配的在线字幕，可手动输入英文片名搜索');
-        return;
-      }
-      this.subSearchResults = results;
-      this.subSearchQuery = query;
-      await this.mountOnlineSubtitle(results[0]);
-    } catch (e) {
-      this.showBriefToast(e instanceof Error ? e.message : '自动匹配失败');
-    } finally {
-      this.autoMatching = false;
-    }
-  }
-
-  private async runOnlineSubtitleSearch(): Promise<void> {
-    const q = this.subSearchQuery.trim();
-    if (!q || this.subSearching) return;
-    this.subSearching = true;
-    try {
-      const fileName = this.mediaItem ? this.mediaItem.fileName : '';
-      this.subSearchResults = await SubtitleService.searchAllSubtitles(q, fileName, 'all', this.store.settings.subdlApiKey);
-      if (this.subSearchResults.length === 0) {
-        this.showBriefToast('未找到匹配的在线字幕，可尝试英文片名');
-      }
-    } finally {
-      this.subSearching = false;
-    }
-  }
-
-  private async mountOnlineSubtitle(res: OnlineSubtitleResult): Promise<void> {
-    try {
-      this.showBriefToast(`正在下载 ${res.langLabel} 字幕...`);
-      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-      const text = await SubtitleService.downloadSubtitleText(res.downloadUrl, ctx.cacheDir);
-      const trk = SubtitleEngine.parse(text, `${res.langLabel} · ${res.title}`, res.downloadUrl);
-      this.appendExternalTrack(trk);
-      this.subtitleEnabled = true;
-      this.showBriefToast(`已加载在线字幕：${res.langLabel}`);
-    } catch (e) {
-      this.showBriefToast(e instanceof Error ? e.message : '在线字幕加载失败');
-    }
-  }
-
-  private async importLocalSubtitle(): Promise<void> {
-    try {
-      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-      const docPicker = new picker.DocumentViewPicker(ctx);
-      const opts = new picker.DocumentSelectOptions();
-      opts.maxSelectNumber = 8;
-      const uris = await docPicker.select(opts);
-      if (!uris || uris.length === 0) return;
-
-      let loaded = 0;
-      let lastName = '';
-      for (let i = 0; i < uris.length; i++) {
-        try {
-          const file = fs.openSync(uris[i], fs.OpenMode.READ_ONLY);
-          const stat = fs.statSync(file.fd);
-          const buf = new ArrayBuffer(Math.min(stat.size, 8 * 1024 * 1024));
-          fs.readSync(file.fd, buf);
-          fs.closeSync(file.fd);
-
-          const text = util.TextDecoder.create('utf-8').decodeToString(new Uint8Array(buf));
-          const decoded = decodeURIComponent(uris[i]);
-          const name = decoded.substring(decoded.lastIndexOf('/') + 1);
-          this.appendExternalTrack(SubtitleEngine.parse(text, name, uris[i]));
-          lastName = name;
-          loaded++;
-        } catch (_e) {
-          // Skip unreadable files and keep importing the rest
-        }
-      }
-      if (loaded > 0) {
-        this.subtitleEnabled = true;
-        this.showBriefToast(loaded > 1 ? `已加载 ${loaded} 条字幕轨道` : `已加载字幕：${lastName}`);
-      } else {
-        this.showBriefToast('加载字幕文件失败');
-      }
-    } catch (_e) {
-      this.showBriefToast('加载字幕文件失败');
-    }
-  }
-
   private async resolvePlaybackUrl(): Promise<ResolvedPlaybackUrl> {
     if (!this.mediaItem) return { url: '', isLocalFd: false };
     let rawUrl = this.mediaItem.streamUrl;
@@ -560,8 +357,8 @@ struct PlayerPage {
 
     const dynamicResolved = await RemoteSourceClient.resolvePlayableStream(this.mediaItem, this.mediaSource);
     rawUrl = dynamicResolved.streamUrl;
-    if (dynamicResolved.subtitleUrl && this.externalTracks.length === 0) {
-      this.loadInitialSubtitle(dynamicResolved.subtitleUrl);
+    if (dynamicResolved.subtitleUrl && this.subtitle.externalTracks.length === 0) {
+      this.subtitle.loadSubtitleFromUrl(dynamicResolved.subtitleUrl);
     }
 
     // HLS (.m3u8) playlists contain relative segment URLs so players must fetch them directly from origin
@@ -824,6 +621,7 @@ struct PlayerPage {
         });
       }
       this.tracks = list;
+      this.subtitle.setEmbeddedTracks(list.filter(t => t.kind === 'subtitle'), this.engineMode === 'native_hw');
     } catch (_e) {
       // Ignore on devices where track metadata is restricted
     }
@@ -839,10 +637,13 @@ struct PlayerPage {
         this.selectedAudioTrack = this.resumeAudioTrackIndex;
       }
     }
-    if (this.resumeSubtitleTrackIndex >= 0) {
-      const found = this.tracks.filter(t => t.kind === 'subtitle' && t.index === this.resumeSubtitleTrackIndex);
-      if (found.length > 0 && prismNative.selectPlayerTrack(this.nativePlayerId, this.resumeSubtitleTrackIndex) === 0) {
-        this.selectedNativeSubtitleTrack = this.resumeSubtitleTrackIndex;
+    const desiredSubtitle = this.subtitle.selectedEmbeddedTrack;
+    if (desiredSubtitle >= 0) {
+      const found = this.tracks.filter(t => t.kind === 'subtitle' && t.index === desiredSubtitle);
+      if (found.length > 0 && prismNative.selectPlayerTrack(this.nativePlayerId, desiredSubtitle) === 0) {
+        this.subtitle.markEmbeddedTrackApplied(desiredSubtitle);
+      } else {
+        this.subtitle.markEmbeddedTrackUnavailable();
       }
     }
   }
@@ -887,27 +688,27 @@ struct PlayerPage {
     }
   }
 
-  private selectNativeSubtitleTrack(index: number): void {
-    if (this.nativePlayerId <= 0) return;
-    if (prismNative.selectPlayerTrack(this.nativePlayerId, index) === 0) {
-      this.selectedNativeSubtitleTrack = index;
+  /** Host callback: actually switch the native embedded subtitle track. */
+  private applyEmbeddedTrackSelection(index: number): boolean {
+    if (this.nativePlayerId <= 0) return false;
+    const ok = prismNative.selectPlayerTrack(this.nativePlayerId, index) === 0;
+    if (ok) {
       const found = this.tracks.filter(t => t.kind === 'subtitle' && t.index === index);
       this.showBriefToast(`已选择内嵌字幕轨：${found.length > 0 ? found[0].label : index}`);
-    } else {
-      this.showBriefToast('内嵌字幕轨切换失败');
     }
+    return ok;
   }
 
-  private deselectNativeSubtitleTrack(): void {
+  /** Host callback: close the native embedded subtitle track. */
+  private clearEmbeddedTrackSelection(index: number): void {
     if (this.nativePlayerId <= 0) return;
-    if (this.selectedNativeSubtitleTrack >= 0) {
+    if (index >= 0) {
       try {
-        prismNative.deselectPlayerTrack(this.nativePlayerId, this.selectedNativeSubtitleTrack);
+        prismNative.deselectPlayerTrack(this.nativePlayerId, index);
       } catch (_e) {
         // Ignore deselect errors
       }
     }
-    this.selectedNativeSubtitleTrack = -1;
     this.showBriefToast('已关闭内嵌字幕');
   }
 
@@ -977,47 +778,7 @@ struct PlayerPage {
         if (dur > 0) this.durationMs = dur;
       }
 
-      if (this.subtitleEnabled && this.enabledTrackIds.length > 0) {
-        let merged: SubtitleCue[] = [];
-        for (let i = 0; i < this.externalTracks.length; i++) {
-          const trk = this.externalTracks[i];
-          if (this.enabledTrackIds.indexOf(trk.id) < 0) continue;
-          const found = SubtitleEngine.findActiveCues(trk.cues, this.positionMs, this.subtitleDelayMs);
-          merged = merged.concat(found);
-        }
-        if (this.subtitleTranslateEnabled && merged.length > 0) {
-          const translatedList: SubtitleCue[] = [];
-          for (let j = 0; j < merged.length; j++) {
-            const c = merged[j];
-            const cachedZh = SubtitleService.getCachedTranslation(c.text);
-            if (!cachedZh) {
-              SubtitleService.translateToChinese(c.text);
-              translatedList.push(c);
-            } else {
-              translatedList.push({
-                index: c.index,
-                startMs: c.startMs,
-                endMs: c.endMs,
-                text: cachedZh === c.text ? c.text : `${cachedZh}\n${c.text}`,
-                alignment: c.alignment,
-                colorHex: c.colorHex,
-                isBold: c.isBold,
-                isItalic: c.isItalic,
-                layer: c.layer
-              });
-            }
-          }
-          this.activeCues = translatedList;
-        } else {
-          this.activeCues = merged;
-        }
-        if (this.subtitleTtsEnabled && this.activeCues.length > 0 && this.isPlaying) {
-          const spokenLine = this.activeCues[0].text.split('\n')[0];
-          SubtitleService.speakSubtitle(spokenLine);
-        }
-      } else {
-        this.activeCues = [];
-      }
+      this.activeCues = this.subtitle.buildActiveCues(this.positionMs, this.isPlaying);
 
       if (this.activeStreamId) {
         try {
@@ -1062,30 +823,6 @@ struct PlayerPage {
     this.avSession.updatePlaybackState(this.isPlaying, this.positionMs, this.playbackRate);
   }
 
-  private async persistSubtitlePrefs(): Promise<void> {
-    const s = this.store.settings;
-    await this.store.updateSettings({
-      themeMode: s.themeMode,
-      cacheBudgetMb: s.cacheBudgetMb,
-      preferHardwareDecode: s.preferHardwareDecode,
-      hardwareSupportedFormats: s.hardwareSupportedFormats,
-      tmdbApiKey: s.tmdbApiKey,
-      tmdbApiHost: s.tmdbApiHost,
-      tmdbImageBase: s.tmdbImageBase,
-      autoSkipIntroSec: s.autoSkipIntroSec,
-      subtitleFontSizeFp: this.subtitleFontFp,
-      subtitleLanguageMode: this.languageMode,
-      subtitleBgEnabled: this.subtitleBgEnabled,
-      subtitleBgOpacityPercent: this.subtitleBgOpacity,
-      subtitleVerticalOffsetVp: this.subtitleOffsetVp,
-      burnSubMaskDefault: s.burnSubMaskDefault,
-      subdlApiKey: s.subdlApiKey,
-      proTier: s.proTier,
-      privacyAccepted: s.privacyAccepted,
-      vaultPinCipher: s.vaultPinCipher || ''
-    });
-  }
-
   private persistProgressNow(finished: boolean = false): void {
     if (!this.mediaItem) return;
     const nearEnd = this.durationMs > 10000 && (this.durationMs - this.positionMs) < 5000;
@@ -1101,13 +838,13 @@ struct PlayerPage {
       positionMs: Math.round(this.positionMs),
       durationMs: Math.round(this.durationMs),
       audioTrackIndex: this.selectedAudioTrack,
-      subtitleTrackIndex: this.selectedNativeSubtitleTrack,
-      subtitleDelayMs: this.subtitleDelayMs,
+      subtitleTrackIndex: this.subtitle.selectedEmbeddedTrack,
+      subtitleDelayMs: this.subtitle.delayMs,
       playbackRate: this.playbackRate,
       // Once the mask UI owns this item (user toggled / adjusted / detected), page state wins; otherwise forward the stored value
-      maskEnabled: this.maskConfigured ? (this.maskEnabled ? 1 : 0) : (prev ? prev.maskEnabled : -1),
-      maskYTop: this.maskConfigured ? this.maskYTop : (prev ? prev.maskYTop : -1),
-      maskYBottom: this.maskConfigured ? this.maskYBottom : (prev ? prev.maskYBottom : -1),
+      maskEnabled: this.subtitle.maskConfigured ? (this.subtitle.maskEnabled ? 1 : 0) : (prev ? prev.maskEnabled : -1),
+      maskYTop: this.subtitle.maskConfigured ? this.subtitle.maskYTop : (prev ? prev.maskYTop : -1),
+      maskYBottom: this.subtitle.maskConfigured ? this.subtitle.maskYBottom : (prev ? prev.maskYBottom : -1),
       updatedAt: Date.now(),
       finished: finished || nearEnd
     });
@@ -1121,64 +858,33 @@ struct PlayerPage {
     return computePictureRect(this.viewportWidthVp, this.viewportHeightVp, this.getSurfaceAspect());
   }
 
-  private setMaskEnabledNow(on: boolean): void {
-    this.maskEnabled = on;
-    this.maskConfigured = true;
-    this.persistProgressNow();
-    this.showBriefToast(on ? '已开启内嵌字幕遮挡' : '已关闭内嵌字幕遮挡');
-  }
-
   private startMaskAdjust(): void {
-    this.drawerTab = 'none';
+    this.subtitlePage = 'none';
+    this.subtitle.setMaskEnabled(true);
     this.showControls = false;
     this.maskAdjusting = true;
-    this.showBriefToast('拖动黑条上下边缘调整，完成后点「完成」');
   }
 
   private finishMaskAdjust(): void {
     this.maskAdjusting = false;
     this.showControls = true;
     this.scheduleHideControls();
-    this.maskConfigured = true;
-    this.maskEnabled = true;
-    this.persistProgressNow();
+    this.subtitle.commitMask();
     this.showBriefToast('遮挡范围已保存');
   }
 
   private onMaskDrag(yTop: number, yBottom: number): void {
-    this.maskYTop = yTop;
-    this.maskYBottom = yBottom;
-  }
-
-  private async runBurnSubDetect(): Promise<void> {
-    if (!this.mediaItem || this.detectingMask) return;
-    if (!BurnSubDetector.isLocalPlayable(this.mediaItem.streamUrl)) {
-      this.showBriefToast('远程视频暂不支持自动识别，请手动调整');
-      return;
-    }
-    this.detectingMask = true;
-    this.showBriefToast('正在识别内嵌字幕区域...');
-    try {
-      const res = await BurnSubDetector.detect(this.mediaItem.streamUrl, this.durationMs);
-      if (res) {
-        this.maskYTop = res.yTop;
-        this.maskYBottom = res.yBottom;
-        this.maskEnabled = true;
-        this.maskConfigured = true;
-        this.persistProgressNow();
-        this.showBriefToast('已识别并遮挡内嵌字幕区域');
-      } else {
-        this.showBriefToast('未检测到内嵌字幕，可尝试手动调整');
-      }
-    } catch (_e) {
-      this.showBriefToast('识别失败，请手动调整');
-    } finally {
-      this.detectingMask = false;
-    }
+    this.subtitle.setMaskRange(yTop, yBottom);
   }
 
   private handleKeyEvent(event: KeyEvent): void {
     if (event.type !== KeyType.Down) return;
+    if (this.subtitlePage !== 'none') {
+      if (event.keyCode === KeyCode.KEYCODE_ESCAPE || event.keyCode === KeyCode.KEYCODE_S) {
+        this.closeSubtitleFlow();
+      }
+      return;
+    }
     this.wakeControls();
     const hasShift = event.getModifierKeyState ? event.getModifierKeyState(['Shift']) : false;
 
@@ -1226,7 +932,7 @@ struct PlayerPage {
         break;
       }
       case KeyCode.KEYCODE_S:
-        this.drawerTab = this.drawerTab === 'subtitle' ? 'none' : 'subtitle';
+        this.toggleSubtitleCenter();
         break;
       case KeyCode.KEYCODE_A:
         this.refreshNativeTracks();
@@ -1244,6 +950,44 @@ struct PlayerPage {
       default:
         break;
     }
+  }
+
+  private openSubtitleCenter(): void {
+    this.drawerTab = 'none';
+    this.refreshNativeTracks();
+    this.subtitle.setEmbeddedTracks(this.tracks.filter(t => t.kind === 'subtitle'), this.engineMode === 'native_hw');
+    this.subtitlePage = 'hub';
+    this.showControls = false;
+  }
+
+  private closeSubtitleFlow(): void {
+    this.subtitlePage = 'none';
+    this.showControls = true;
+    this.scheduleHideControls();
+  }
+
+  private toggleSubtitleCenter(): void {
+    if (this.subtitlePage !== 'none') {
+      this.closeSubtitleFlow();
+    } else {
+      this.openSubtitleCenter();
+    }
+  }
+
+  onBackPress(): boolean {
+    if (this.maskAdjusting) {
+      this.finishMaskAdjust();
+      return true;
+    }
+    if (this.subtitlePage !== 'none') {
+      this.closeSubtitleFlow();
+      return true;
+    }
+    if (this.drawerTab !== 'none') {
+      this.drawerTab = 'none';
+      return true;
+    }
+    return false;
   }
 
   private getSurfaceWidth(): string {
@@ -1276,6 +1020,52 @@ struct PlayerPage {
       .backgroundColor(active ? '#3B82F6' : '#14161D')
       .border({ width: 0.7, color: active ? '#3B82F6' : '#1FFFFFFF' })
       .onClick(() => onTap())
+  }
+
+  @Builder
+  subtitleSheetBuilder() {
+    Column() {
+      if (this.subtitlePage === 'hub') {
+        SubtitleHubPage({
+          onNavigate: (route: SubtitlePageRoute) => { this.subtitlePage = route; },
+          onClose: () => this.closeSubtitleFlow()
+        })
+      } else if (this.subtitlePage === 'tracks') {
+        SubtitleTracksPage({
+          onBack: () => { this.subtitlePage = 'hub'; },
+          onClose: () => this.closeSubtitleFlow()
+        })
+      } else if (this.subtitlePage === 'style') {
+        SubtitleStylePage({
+          onBack: () => { this.subtitlePage = 'hub'; },
+          onClose: () => this.closeSubtitleFlow()
+        })
+      } else if (this.subtitlePage === 'sync') {
+        SubtitleSyncPage({
+          onBack: () => { this.subtitlePage = 'hub'; },
+          onClose: () => this.closeSubtitleFlow()
+        })
+      } else if (this.subtitlePage === 'online') {
+        SubtitleOnlinePage({
+          onBack: () => { this.subtitlePage = 'hub'; },
+          onClose: () => this.closeSubtitleFlow()
+        })
+      } else if (this.subtitlePage === 'assist') {
+        SubtitleAssistPage({
+          onBack: () => { this.subtitlePage = 'hub'; },
+          onClose: () => this.closeSubtitleFlow()
+        })
+      } else if (this.subtitlePage === 'mask') {
+        SubtitleMaskPage({
+          onBack: () => { this.subtitlePage = 'hub'; },
+          onClose: () => this.closeSubtitleFlow(),
+          onManualAdjust: () => this.startMaskAdjust()
+        })
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor('#FF0B0D12')
   }
 
   build() {
@@ -1318,12 +1108,12 @@ struct PlayerPage {
       .backgroundColor('#000000')
 
       // Burned-in Subtitle Occlusion Band (English-learning mask, above the video picture, below all overlays)
-      if (this.maskEnabled) {
+      if (this.subtitle.maskEnabled) {
         SubtitleMaskBand({
           peeking: this.maskPeeking,
           adjusting: this.maskAdjusting,
-          yTop: this.maskYTop,
-          yBottom: this.maskYBottom,
+          yTop: this.subtitle.maskYTop,
+          yBottom: this.subtitle.maskYBottom,
           picture: this.maskPictureRect(),
           onChange: (yTop: number, yBottom: number): void => {
             this.onMaskDrag(yTop, yBottom);
@@ -1342,14 +1132,14 @@ struct PlayerPage {
       }
 
       // ASS / SRT / VTT Synchronized Subtitle Overlay
-      if (this.subtitleEnabled) {
+      if (this.subtitle.enabled) {
         SubtitleOverlay({
           cues: this.activeCues,
-          fontSizeFp: this.subtitleFontFp,
-          languageMode: this.languageMode,
-          bgEnabled: this.subtitleBgEnabled,
-          bgOpacityPercent: this.subtitleBgOpacity,
-          verticalOffsetVp: this.subtitleOffsetVp
+          fontSizeFp: this.subtitle.fontFp,
+          languageMode: this.subtitle.languageMode,
+          bgEnabled: this.subtitle.bgEnabled,
+          bgOpacityPercent: this.subtitle.bgOpacityPercent,
+          verticalOffsetVp: this.subtitle.verticalOffsetVp
         })
       }
 
@@ -1375,7 +1165,7 @@ struct PlayerPage {
             }),
             LongPressGesture({ duration: 350, repeat: false })
               .onAction(() => {
-                if (this.maskEnabled && !this.maskAdjusting && !this.screenLocked) {
+                if (this.subtitle.maskEnabled && !this.maskAdjusting && !this.screenLocked) {
                   this.maskPeeking = true;
                 }
               })
@@ -1824,14 +1614,12 @@ struct PlayerPage {
                 Button({ type: ButtonType.Circle }) {
                   SymbolGlyph($r('sys.symbol.textformat_size_square_fill'))
                     .fontSize(17)
-                    .fontColor([this.drawerTab === 'subtitle' ? '#3B82F6' : Color.White])
+                    .fontColor([this.subtitlePage !== 'none' ? '#3B82F6' : Color.White])
                 }
                 .width(38)
                 .height(38)
                 .backgroundColor('#66191D2A')
-                .onClick(() => {
-                  this.drawerTab = this.drawerTab === 'subtitle' ? 'none' : 'subtitle';
-                })
+                .onClick(() => this.toggleSubtitleCenter())
 
                 Button({ type: ButtonType.Circle }) {
                   SymbolGlyph($r('sys.symbol.slider_horizontal_2'))
@@ -1903,7 +1691,7 @@ struct PlayerPage {
         .translate({ x: '-50%' })
       }
 
-      // Side Drawer with Scrim Backdrop (Subtitle / Audio / Aspect Settings)
+      // Playback settings drawer (aspect / rate / audio) — subtitles live in dedicated screens.
       if (this.drawerTab !== 'none') {
         Stack({ alignContent: Alignment.TopEnd }) {
           Column()
@@ -1914,7 +1702,7 @@ struct PlayerPage {
 
           Column({ space: 12 }) {
             Row({ space: 10 }) {
-              Text(this.drawerTab === 'subtitle' ? '字幕设置' : '播放设置')
+              Text('播放设置')
                 .fontSize(17)
                 .fontWeight(FontWeight.Bold)
                 .fontColor(Color.White)
@@ -1933,316 +1721,6 @@ struct PlayerPage {
             Scroll() {
               Column({ space: 16 }) {
 
-            if (this.drawerTab === 'subtitle') {
-              Row() {
-                Text('显示字幕').fontSize(14).fontColor(Color.White)
-                Blank()
-                Toggle({ type: ToggleType.Switch, isOn: this.subtitleEnabled })
-                  .selectedColor('#3B82F6')
-                  .onChange((v: boolean) => { this.subtitleEnabled = v; })
-              }.width('100%')
-
-              if (this.externalTracks.some(t => t.langTag === 'zh-en')) {
-                Column({ space: 8 }) {
-                  Text('双语字幕行过滤').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#9CA3AF')
-                  Row({ space: 6 }) {
-                    ForEach(['all', 'zh', 'en'] as SubtitleLanguageMode[], (m: SubtitleLanguageMode) => {
-                      this.drawerChip(
-                        m === 'all' ? '全部' : (m === 'zh' ? '只中文' : '只英文'),
-                        this.languageMode === m,
-                        () => {
-                          this.languageMode = m;
-                          this.persistSubtitlePrefs();
-                        }
-                      )
-                    }, (m: SubtitleLanguageMode) => `${m}_${this.languageMode === m}`)
-                  }.width('100%')
-                }.width('100%').alignItems(HorizontalAlign.Start)
-              }
-
-              Column({ space: 8 }) {
-                Text(`外挂字幕轨道（${this.externalTracks.length}）`)
-                  .fontSize(13)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor('#9CA3AF')
-                if (this.externalTracks.length === 0) {
-                  Text('未挂载外挂字幕').fontSize(12).fontColor('#6B7280')
-                }
-                ForEach(this.externalTracks, (trk: ExternalSubtitleTrack) => {
-                  Row({ space: 8 }) {
-                    Row({ space: 8 }) {
-                      SymbolGlyph(this.enabledTrackIds.indexOf(trk.id) >= 0
-                        ? $r('sys.symbol.checkmark_circle_fill')
-                        : $r('sys.symbol.circle'))
-                        .fontSize(18)
-                        .fontColor([this.enabledTrackIds.indexOf(trk.id) >= 0 ? '#3B82F6' : '#6B7280'])
-                      Column({ space: 2 }) {
-                        Text(trk.label)
-                          .fontSize(13)
-                          .fontColor(Color.White)
-                          .maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        Text(`${trk.format.toUpperCase()} · ${trk.cues.length} 条`)
-                          .fontSize(10)
-                          .fontColor('#6B7280')
-                      }
-                      .alignItems(HorizontalAlign.Start)
-                      .layoutWeight(1)
-                      Text(this.langBadge(trk.langTag))
-                        .fontSize(9)
-                        .fontColor('#94A3B8')
-                        .padding({ left: 5, right: 5, top: 1, bottom: 1 })
-                        .borderRadius(4)
-                        .backgroundColor('#1A38BDF8')
-                    }
-                    .alignItems(VerticalAlign.Center)
-                    .layoutWeight(1)
-                    .onClick(() => this.toggleTrackEnabled(trk.id))
-
-                    SymbolGlyph($r('sys.symbol.xmark'))
-                      .fontSize(13)
-                      .fontColor(['#6B7280'])
-                      .padding(6)
-                      .onClick(() => this.removeExternalTrack(trk.id))
-                  }
-                  .width('100%')
-                  .padding({ left: 10, right: 6, top: 8, bottom: 8 })
-                  .borderRadius(10)
-                  .backgroundColor('#14161D')
-                  .alignItems(VerticalAlign.Center)
-                }, (trk: ExternalSubtitleTrack) => `${trk.id}_${this.enabledTrackIds.indexOf(trk.id) >= 0 ? 1 : 0}`)
-                if (this.externalTracks.length > 0) {
-                  Text(this.enabledTrackIds.length > 0
-                    ? `已启用 ${this.enabledTrackIds.length} 条轨道，可多选同屏`
-                    : '全部轨道已停用，勾选行以启用')
-                    .fontSize(10)
-                    .fontColor(this.enabledTrackIds.length > 0 ? '#10B981' : '#6B7280')
-                }
-              }.width('100%').alignItems(HorizontalAlign.Start)
-
-              Button('导入本地 .ass / .srt / .vtt 字幕（可多选）')
-                .width('100%')
-                .height(40)
-                .fontSize(13)
-                .fontColor(Color.White)
-                .backgroundColor('#3B82F6')
-                .borderRadius(10)
-                .onClick(() => this.importLocalSubtitle())
-
-              // Online Subtitle Matching (SubDL + 字幕库，季集感知评分)
-              Column({ space: 8 }) {
-                Text('在线字幕匹配（SubDL · 字幕库）').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#9CA3AF')
-
-                Button() {
-                  Row({ space: 6 }) {
-                    if (this.autoMatching) {
-                      LoadingProgress().width(14).height(14).color(Color.White)
-                    } else {
-                      SymbolGlyph($r('sys.symbol.wand_and_stars_fill'))
-                        .fontSize(14)
-                        .fontColor([Color.White])
-                    }
-                    Text(this.autoMatching ? '正在匹配...' : '自动匹配最佳字幕')
-                      .fontSize(13)
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor(Color.White)
-                  }
-                }
-                .width('100%')
-                .height(40)
-                .backgroundColor('#3B82F6')
-                .borderRadius(10)
-                .enabled(!this.autoMatching)
-                .onClick(() => this.autoMatchSubtitle())
-
-                Row({ space: 6 }) {
-                  TextInput({ text: this.subSearchQuery, placeholder: '输入片名 / 英文名' })
-                    .layoutWeight(1)
-                    .height(36)
-                    .fontSize(12)
-                    .fontColor(Color.White)
-                    .backgroundColor('#14161D')
-                    .borderRadius(8)
-                    .onChange((v: string) => { this.subSearchQuery = v; })
-                  Button(this.subSearching ? '搜索中' : '搜索')
-                    .height(36)
-                    .padding({ left: 12, right: 12 })
-                    .fontSize(12)
-                    .fontColor(Color.White)
-                    .backgroundColor('#3B82F6')
-                    .borderRadius(8)
-                    .enabled(!this.subSearching)
-                    .onClick(() => { this.runOnlineSubtitleSearch(); })
-                }.width('100%')
-
-                if (this.subSearchResults.length > 0) {
-                  Column({ space: 6 }) {
-                    ForEach(this.subSearchResults.slice(0, 8), (res: OnlineSubtitleResult) => {
-                      Row({ space: 8 }) {
-                        Text(res.langLabel)
-                          .fontSize(10)
-                          .fontColor('#3B82F6')
-                          .padding({ left: 5, right: 5, top: 2, bottom: 2 })
-                          .borderRadius(4)
-                          .backgroundColor('#1E3B82F6')
-                        Text(res.title)
-                          .fontSize(11)
-                          .fontColor(Color.White)
-                          .maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                          .layoutWeight(1)
-                        Text(res.sourceName)
-                          .fontSize(10)
-                          .fontColor('#9CA3AF')
-                        Text(res.format)
-                          .fontSize(10)
-                          .fontColor('#6B7280')
-                      }
-                      .width('100%')
-                      .padding({ left: 8, right: 8, top: 7, bottom: 7 })
-                      .borderRadius(8)
-                      .backgroundColor('#14161D')
-                      .onClick(() => { this.mountOnlineSubtitle(res); })
-                    }, (res: OnlineSubtitleResult) => res.id)
-                  }.width('100%')
-                }
-              }.width('100%').alignItems(HorizontalAlign.Start)
-
-              // Subtitle Translation & HarmonyOS CoreSpeechKit TTS
-              Column({ space: 8 }) {
-                Row() {
-                  Column({ space: 1 }) {
-                    Text('外文字幕翻译为中文').fontSize(13).fontColor(Color.White)
-                    Text('英 / 法 / 日 / 韩等外挂字幕双语对照').fontSize(10).fontColor('#6B7280')
-                  }.alignItems(HorizontalAlign.Start)
-                  Blank()
-                  Toggle({ type: ToggleType.Switch, isOn: this.subtitleTranslateEnabled })
-                    .selectedColor('#3B82F6')
-                    .onChange((v: boolean) => { this.subtitleTranslateEnabled = v; })
-                }.width('100%')
-
-                Row() {
-                  Column({ space: 1 }) {
-                    Text('AI 语音朗读字幕 (TTS)').fontSize(13).fontColor(Color.White)
-                    Text('端侧语音合成同声朗读，适合教程与纪录片').fontSize(10).fontColor('#6B7280')
-                  }.alignItems(HorizontalAlign.Start)
-                  Blank()
-                  Toggle({ type: ToggleType.Switch, isOn: this.subtitleTtsEnabled })
-                    .selectedColor('#3B82F6')
-                    .onChange((v: boolean) => {
-                      this.subtitleTtsEnabled = v;
-                      if (!v) SubtitleService.stopSpeaking();
-                    })
-                }.width('100%')
-              }.width('100%')
-
-              Column({ space: 8 }) {
-                Text(`字幕时间微调：${(this.subtitleDelayMs / 1000).toFixed(1)}s`)
-                  .fontSize(12).fontColor('#9CA3AF')
-                Row({ space: 6 }) {
-                  this.drawerChip('-0.5s', false, () => { this.subtitleDelayMs -= 500; })
-                  this.drawerChip('-0.1s', false, () => { this.subtitleDelayMs -= 100; })
-                  this.drawerChip('归零', this.subtitleDelayMs === 0, () => { this.subtitleDelayMs = 0; })
-                  this.drawerChip('+0.1s', false, () => { this.subtitleDelayMs += 100; })
-                  this.drawerChip('+0.5s', false, () => { this.subtitleDelayMs += 500; })
-                }.width('100%')
-              }.width('100%').alignItems(HorizontalAlign.Start)
-
-              Column({ space: 6 }) {
-                Text(`字号：${this.subtitleFontFp} fp`).fontSize(12).fontColor('#9CA3AF')
-                Slider({ value: this.subtitleFontFp, min: 14, max: 32, step: 2 })
-                  .width('100%')
-                  .selectedColor('#3B82F6')
-                  .onChange((v: number, mode: SliderChangeMode) => {
-                    this.subtitleFontFp = Math.round(v);
-                    if (mode === SliderChangeMode.End) {
-                      this.persistSubtitlePrefs();
-                      this.showBriefToast(`已保存为默认字号 ${this.subtitleFontFp} fp`);
-                    }
-                  })
-              }.width('100%').alignItems(HorizontalAlign.Start)
-
-              Column({ space: 8 }) {
-                Row() {
-                  Text('字幕背景').fontSize(14).fontColor(Color.White)
-                  Blank()
-                  Toggle({ type: ToggleType.Switch, isOn: this.subtitleBgEnabled })
-                    .selectedColor('#3B82F6')
-                    .onChange((v: boolean) => {
-                      this.subtitleBgEnabled = v;
-                      this.persistSubtitlePrefs();
-                    })
-                }.width('100%')
-
-                Text(`背景不透明度：${this.subtitleBgOpacity}%`).fontSize(12).fontColor('#9CA3AF')
-                Slider({ value: this.subtitleBgOpacity, min: 0, max: 100, step: 5 })
-                  .width('100%')
-                  .selectedColor('#3B82F6')
-                  .onChange((v: number, mode: SliderChangeMode) => {
-                    this.subtitleBgOpacity = Math.round(v);
-                    if (mode === SliderChangeMode.End) {
-                      this.persistSubtitlePrefs();
-                    }
-                  })
-              }.width('100%').alignItems(HorizontalAlign.Start)
-
-              Column({ space: 6 }) {
-                Text(this.subtitleOffsetVp === 0 ? '字幕位置：默认底部' : `字幕位置：上移 ${this.subtitleOffsetVp}vp`)
-                  .fontSize(12).fontColor('#9CA3AF')
-                Slider({ value: this.subtitleOffsetVp, min: 0, max: 160, step: 8 })
-                  .width('100%')
-                  .selectedColor('#3B82F6')
-                  .onChange((v: number, mode: SliderChangeMode) => {
-                    this.subtitleOffsetVp = Math.round(v);
-                    if (mode === SliderChangeMode.End) {
-                      this.persistSubtitlePrefs();
-                    }
-                  })
-              }.width('100%').alignItems(HorizontalAlign.Start)
-
-              Divider().color('#18FFFFFF')
-
-              Column({ space: 8 }) {
-                Row() {
-                  Text('遮挡内嵌字幕').fontSize(14).fontColor(Color.White)
-                  Blank()
-                  Toggle({ type: ToggleType.Switch, isOn: this.maskEnabled })
-                    .selectedColor('#3B82F6')
-                    .onChange((v: boolean) => { this.setMaskEnabledNow(v); })
-                }.width('100%')
-
-                Text('英语学习模式：黑条盖住画面内烧录的硬字幕，长按画面可临时露出')
-                  .fontSize(10)
-                  .fontColor('#6B7280')
-
-                Row({ space: 6 }) {
-                  Button(this.detectingMask ? '识别中...' : '自动识别')
-                    .layoutWeight(1)
-                    .height(36)
-                    .fontSize(12)
-                    .fontColor(this.isLocalPlayback() && !this.detectingMask ? Color.White : '#6B7280')
-                    .backgroundColor(this.isLocalPlayback() ? '#3B82F6' : '#14161D')
-                    .borderRadius(8)
-                    .enabled(this.isLocalPlayback() && !this.detectingMask)
-                    .onClick(() => this.runBurnSubDetect())
-                  Button('手动调整')
-                    .layoutWeight(1)
-                    .height(36)
-                    .fontSize(12)
-                    .fontColor(Color.White)
-                    .backgroundColor('#14161D')
-                    .border({ width: 0.7, color: '#1FFFFFFF' })
-                    .borderRadius(8)
-                    .onClick(() => this.startMaskAdjust())
-                }.width('100%')
-
-                if (!this.isLocalPlayback()) {
-                  Text('远程流媒体视频暂不支持自动识别，请手动调整遮挡范围')
-                    .fontSize(10)
-                    .fontColor('#6B7280')
-                }
-              }.width('100%').alignItems(HorizontalAlign.Start)
-            } else {
               Column({ space: 8 }) {
                 Text('画面比例').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#9CA3AF')
                 Row({ space: 6 }) {
@@ -2334,47 +1812,6 @@ struct PlayerPage {
                 }
               }.width('100%').alignItems(HorizontalAlign.Start)
 
-              if (this.engineMode === 'native_hw') {
-                Column({ space: 8 }) {
-                  Text('内嵌字幕轨').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#9CA3AF')
-                  if (this.tracks.filter(t => t.kind === 'subtitle').length === 0) {
-                    Text('当前视频没有内嵌字幕轨，可在字幕页导入外挂字幕')
-                      .fontSize(12)
-                      .fontColor('#6B7280')
-                  } else {
-                    Row({ space: 6 }) {
-                      this.drawerChip('关闭内嵌字幕', this.selectedNativeSubtitleTrack < 0, () => this.deselectNativeSubtitleTrack())
-                    }.width('100%')
-
-                    ForEach(this.tracks.filter(t => t.kind === 'subtitle'), (trk: PlayerTrackItem) => {
-                      Row() {
-                        Column({ space: 2 }) {
-                          Text(trk.label).fontSize(13).fontColor(Color.White)
-                          if (trk.codec) {
-                            Text(trk.codec).fontSize(11).fontColor('#6B7280')
-                          }
-                        }.alignItems(HorizontalAlign.Start)
-                        Blank()
-                        if (this.selectedNativeSubtitleTrack === trk.index) {
-                          SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
-                            .fontSize(16)
-                            .fontColor(['#3B82F6'])
-                        }
-                      }
-                      .width('100%')
-                      .padding(12)
-                      .borderRadius(10)
-                      .backgroundColor('#14161D')
-                      .onClick(() => this.selectNativeSubtitleTrack(trk.index))
-                    }, (trk: PlayerTrackItem) => `sub_${trk.index}_${this.selectedNativeSubtitleTrack === trk.index}`)
-
-                    Text('内嵌字幕与外挂字幕可同时显示，如重叠请二选一')
-                      .fontSize(10)
-                      .fontColor('#6B7280')
-                  }
-                }.width('100%').alignItems(HorizontalAlign.Start)
-              }
-            }
               }
               .width('100%')
             }
@@ -2394,6 +1831,7 @@ struct PlayerPage {
         .width('100%')
         .height('100%')
       }
+
     }
     .width('100%')
     .height('100%')
@@ -2407,5 +1845,16 @@ struct PlayerPage {
       if (h > 0) this.viewportHeightVp = h;
     })
     .onKeyEvent((ev: KeyEvent) => this.handleKeyEvent(ev))
+    .bindSheet(this.subtitlePage !== 'none', this.subtitleSheetBuilder(), {
+      height: '92%',
+      dragBar: false,
+      showClose: false,
+      backgroundColor: '#FF0B0D12',
+      onDisappear: () => {
+        this.subtitlePage = 'none';
+        this.showControls = true;
+        this.scheduleHideControls();
+      }
+    })
   }
 }
