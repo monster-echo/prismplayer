@@ -4,11 +4,10 @@
 #
 # 裁剪说明(相对 DevEco 完整安装 ~7.6G):
 #   - tools/node    : runner 用 actions/setup-node 装 Node 24,省 939M
-#   - hms/native    : 工程 CMake 链接的全部 NDK 库都在 openharmony/native,
-#                     hms/native(HMS NDK)用不到,省 1.8G
-#   注意 */previewer 必须保留:hvigor 做 SDK 完整性校验,缺了报 00303168,
-#   即使 assembleHap/assembleApp 不实际使用它
-# 保留 ~4.1G:gzip 后约 1.1G,按 1900M 分卷以适配 GitHub release 单文件 2GB 上限。
+#   注意 SDK(sdk/default)不可裁剪:hvigor 做完整性校验,缺任何组件都报
+#   00303168 "Missing SDK components"(previewer 与 hms/native 都实测被点名过),
+#   即使 assembleHap/assembleApp 不实际使用该组件
+# 保留 ~5.9G:gzip 后约 1.7G,按 1900M 分卷以适配 GitHub release 单文件 2GB 上限。
 #
 # 用法:
 #   ./scripts/pack-toolchain.sh                 # 只打包到 ~/Downloads
@@ -22,7 +21,7 @@ DEVECO_APP="/Applications/DevEco-Studio.app"
 REPO="${REPO:-monster-echo/harmonyos-cli}"
 # SDK 实际版本可从 Contents/sdk/default/sdk-pkg.json 的 "version" 读取,尾部 -N 为打包序号:
 # 工具链有任何变化(升级 DevEco、增删目录)时递增 -N,避免 CI 命中旧缓存。
-TOOLCHAIN_VERSION="26.0.0.105-3"
+TOOLCHAIN_VERSION="26.0.0.105-4"
 OUT_DIR="${OUT_DIR:-$HOME/Downloads}"
 
 SRC="$DEVECO_APP/Contents"
@@ -37,13 +36,9 @@ echo "[1/4] 复制 tools(hvigor + ohpm)..."
 ditto "$SRC/tools/hvigor" "$WORK/harmony-cli/tools/hvigor"
 ditto "$SRC/tools/ohpm"   "$WORK/harmony-cli/tools/ohpm"
 
-echo "[2/4] 复制 SDK 并裁剪(previewer、hms/native)..."
-ditto "$SRC/sdk/default/openharmony" "$WORK/harmony-cli/sdk/default/openharmony"
-ditto "$SRC/sdk/default/hms"         "$WORK/harmony-cli/sdk/default/hms"
-# sdk-pkg.json 在 sdk/default 顶层,hvigor 靠它匹配工程 modelVersion,漏了会报 00303312
-cp "$SRC/sdk/default/sdk-pkg.json" "$WORK/harmony-cli/sdk/default/"
-# previewer 保留(00303118/00303168 完整性校验需要),只裁 hms/native
-rm -rf "$WORK/harmony-cli/sdk/default/hms/native"
+echo "[2/4] 复制 SDK(全量,不可裁剪)与 tools..."
+ditto "$SRC/sdk/default" "$WORK/harmony-cli/sdk/default"
+# sdk-pkg.json 已随 ditto 带上(hvigor 靠它匹配工程 modelVersion,漏了报 00303312)
 
 echo "$TOOLCHAIN_VERSION" > "$WORK/harmony-cli/toolchain-version"
 echo "  裁剪后体积: $(du -sh "$WORK/harmony-cli" | cut -f1)"
