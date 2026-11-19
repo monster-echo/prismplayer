@@ -21,7 +21,7 @@ DEVECO_APP="/Applications/DevEco-Studio.app"
 REPO="${REPO:-monster-echo/harmonyos-cli}"
 # SDK 实际版本可从 Contents/sdk/default/sdk-pkg.json 的 "version" 读取,尾部 -N 为打包序号:
 # 工具链有任何变化(升级 DevEco、增删目录)时递增 -N,避免 CI 命中旧缓存。
-TOOLCHAIN_VERSION="26.0.0.105-1"
+TOOLCHAIN_VERSION="26.0.0.105-2"
 OUT_DIR="${OUT_DIR:-$HOME/Downloads}"
 
 SRC="$DEVECO_APP/Contents"
@@ -39,6 +39,8 @@ ditto "$SRC/tools/ohpm"   "$WORK/harmony-cli/tools/ohpm"
 echo "[2/4] 复制 SDK 并裁剪(previewer、hms/native)..."
 ditto "$SRC/sdk/default/openharmony" "$WORK/harmony-cli/sdk/default/openharmony"
 ditto "$SRC/sdk/default/hms"         "$WORK/harmony-cli/sdk/default/hms"
+# sdk-pkg.json 在 sdk/default 顶层,hvigor 靠它匹配工程 modelVersion,漏了会报 00303312
+cp "$SRC/sdk/default/sdk-pkg.json" "$WORK/harmony-cli/sdk/default/"
 rm -rf "$WORK/harmony-cli/sdk/default/openharmony/previewer"
 rm -rf "$WORK/harmony-cli/sdk/default/hms/previewer"
 rm -rf "$WORK/harmony-cli/sdk/default/hms/native"

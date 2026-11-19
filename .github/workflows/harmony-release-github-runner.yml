@@ -28,7 +28,7 @@ permissions:
 env:
   TOOLCHAIN_MIRROR_REPO: monster-echo/harmonyos-cli
   # 必须与 scripts/pack-toolchain.sh 里的 TOOLCHAIN_VERSION 一致
-  TOOLCHAIN_VERSION: '26.0.0.105-1'
+  TOOLCHAIN_VERSION: '26.0.0.105-2'
 
 jobs:
   build-harmony:
@@ -70,6 +70,7 @@ jobs:
           cat "$RUNNER_TEMP"/tc/harmony-cli-mac-*.tar.gz.part-* > "$RUNNER_TEMP/tc/toolchain.tar.gz"
           tar -xzf "$RUNNER_TEMP/tc/toolchain.tar.gz" -C "$HOME"
           test -f "$HOME/harmony-cli/toolchain-version" || { echo "::error::toolchain unpack failed"; exit 1; }
+          test -f "$HOME/harmony-cli/sdk/default/sdk-pkg.json" || { echo "::error::sdk-pkg.json missing"; exit 1; }
           test -d "$HOME/harmony-cli/sdk/default/openharmony/native/llvm" || { echo "::error::native llvm missing"; exit 1; }
 
       - name: Extract version
