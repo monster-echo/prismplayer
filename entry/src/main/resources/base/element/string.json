@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "PrismPlayer 跨端高清影音播放器核心模块"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "PrismPlayer 棱镜影院主入口"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "棱镜影院"
+    }
+  ]
+}

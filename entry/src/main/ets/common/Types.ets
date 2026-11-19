@@ -1,0 +1,269 @@
+export type MediaSourceType = 'webdav' | 'alist' | 'smb' | 'plex' | 'emby' | 's3' | 'youtube' | 'douyin' | 'bilibili' | 'iptv' | 'local';
+
+export interface SourceExtraConfig {
+  region?: string;
+  usePathStyle?: boolean;
+  mirrorUrl?: string;
+  qualityPref?: string;
+  userAgent?: string;
+  referer?: string;
+  cookie?: string;
+}
+
+export function parseSourceExtra(raw?: string): SourceExtraConfig {
+  if (!raw) return {};
+  try {
+    const obj = JSON.parse(raw) as SourceExtraConfig;
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch (_e) {
+    return {};
+  }
+}
+
+export function serializeSourceExtra(cfg: SourceExtraConfig): string {
+  try {
+    return JSON.stringify(cfg);
+  } catch (_e) {
+    return '{}';
+  }
+}
+
+export type MediaCategory = 'all' | 'movie' | 'tv' | 'favorite' | 'private';
+
+export interface SubtitleTrackOption {
+  label: string;
+  lang: string;
+  url: string;
+  format?: string;
+}
+
+export type DecoderEngineMode = 'native_hw' | 'ffmpeg_sw';
+
+export type AspectMode = 'fit' | 'fill' | '16:9' | '21:9' | '4:3';
+
+export type ProTier = 'free' | 'pro_early' | 'pro_lifetime' | 'pro_family';
+
+export interface MediaSource {
+  id: string;
+  name: string;
+  type: MediaSourceType;
+  baseUrl: string;
+  rootPath: string;
+  username: string;
+  password: string; // Stored encrypted via HUKS when persisted
+  allowInsecureTls: boolean;
+  cacheAlist302: boolean;
+  createdAt: number;
+  lastScannedAt: number;
+  extraConfig?: string;
+}
+
+export interface RemoteFileEntry {
+  name: string;
+  path: string;
+  fullUrl: string;
+  isDirectory: boolean;
+  size: number;
+  lastModified: string;
+  contentType: string;
+  isVideo: boolean;
+  isSubtitle: boolean;
+}
+
+export interface MediaItem {
+  id: string;
+  sourceId: string;
+  sourceType: MediaSourceType;
+  remotePath: string;
+  streamUrl: string;
+  fileName: string;
+  fileSize: number;
+  mediaType: 'movie' | 'episode';
+  seriesKey: string;
+  seriesTitle: string;
+  seasonNo: number;
+  episodeNo: number;
+  title: string;
+  originalTitle: string;
+  year: number;
+  overview: string;
+  posterUrl: string;
+  backdropUrl: string;
+  rating: number;
+  qualityTag: string;
+  tmdbId: number;
+  durationMs: number;
+  subtitleUrl: string;
+  subtitleTracks?: SubtitleTrackOption[];
+  isFavorite?: boolean;
+  addedAt: number;
+}
+
+export interface SeriesGroup {
+  seriesKey: string;
+  title: string;
+  posterUrl: string;
+  backdropUrl: string;
+  overview: string;
+  year: number;
+  rating: number;
+  tmdbId: number;
+  episodes: MediaItem[];
+}
+
+export interface WatchHistoryRecord {
+  itemId: string;
+  title: string;
+  subtitleLabel: string;
+  posterUrl: string;
+  streamUrl: string;
+  sourceId: string;
+  positionMs: number;
+  durationMs: number;
+  audioTrackIndex: number;
+  subtitleTrackIndex: number;
+  subtitleDelayMs: number;
+  playbackRate: number;
+  // Burned-in subtitle mask: maskEnabled uses -1 = never configured (fall back to global default), 0 = off, 1 = on;
+  // mask band is normalized (0..1) against the video picture area so letterbox changes never invalidate it
+  maskEnabled: number;
+  maskYTop: number;
+  maskYBottom: number;
+  updatedAt: number;
+  finished: boolean;
+}
+
+export interface ParsedFilenameInfo {
+  cleanTitle: string;
+  year: number;
+  mediaType: 'movie' | 'episode';
+  seasonNo: number;
+  episodeNo: number;
+  qualityTag: string;
+}
+
+export interface SubtitleCue {
+  index: number;
+  startMs: number;
+  endMs: number;
+  text: string;
+  alignment: number; // 1..9 ASS numpad alignment (default 2 = bottom center)
+  colorHex: string;
+  isBold: boolean;
+  isItalic: boolean;
+  layer: number;
+}
+
+export type SubtitleLangTag = 'zh' | 'en' | 'zh-en' | 'und';
+
+export interface ExternalSubtitleTrack {
+  id: string;
+  label: string;
+  format: 'ass' | 'ssa' | 'srt' | 'vtt';
+  sourceUrl: string;
+  langTag: SubtitleLangTag;
+  cues: SubtitleCue[];
+}
+
+export interface PlayerTrackItem {
+  index: number;
+  kind: 'audio' | 'video' | 'subtitle';
+  label: string;
+  language: string;
+  codec: string;
+  details: string;
+}
+
+export interface PlayerLaunchParams {
+  item: MediaItem;
+  source?: MediaSource;
+  startPositionMs?: number;
+  playlist?: MediaItem[];
+  audioTrackIndex?: number;
+  subtitleTrackIndex?: number;
+  subtitleDelayMs?: number;
+  playbackRate?: number;
+}
+
+export interface MediaDetailParams {
+  movie?: MediaItem;
+  series?: SeriesGroup;
+}
+
+export interface SourceFormParams {
+  editingSource?: MediaSource;
+}
+
+export interface SourceBrowserParams {
+  source: MediaSource;
+  initialPath?: string;
+}
+
+export interface LegalDocParams {
+  docType: 'privacy' | 'agreement';
+}
+
+export type VaultEntryKind = 'series' | 'movie' | 'folder';
+
+export interface VaultEntry {
+  id: string;
+  sourceId: string;
+  kind: VaultEntryKind;
+  targetKey: string;
+  title: string;
+  posterUrl: string;
+  createdAt: number;
+}
+
+export interface HiddenFolderRule {
+  id: string;
+  sourceId: string;
+  folderPath: string;
+  folderName: string;
+  createdAt: number;
+}
+
+export interface HardwareCodecRule {
+  format: string;
+  label: string;
+  category: 'container' | 'video' | 'audio';
+  desc: string;
+  defaultHw: boolean;
+}
+
+export interface DecodeRoutingDecision {
+  engine: 'native_hw' | 'ffmpeg_sw';
+  matchedFormat: string;
+  reason: string;
+}
+
+export type SubtitleLanguageMode = 'all' | 'zh' | 'en';
+
+export type ThemeMode = 'system' | 'light' | 'dark';
+
+export interface AppSettings {
+  themeMode: ThemeMode;
+  cacheBudgetMb: number;
+  preferHardwareDecode: boolean;
+  hardwareSupportedFormats?: string[];
+  tmdbApiKey: string;
+  tmdbApiHost: string;
+  tmdbImageBase: string;
+  autoSkipIntroSec: number;
+  subtitleFontSizeFp: number;
+  subtitleLanguageMode: SubtitleLanguageMode;
+  subtitleBgEnabled: boolean;
+  subtitleBgOpacityPercent: number;
+  subtitleVerticalOffsetVp: number;
+  burnSubMaskDefault: boolean;
+  subdlApiKey: string;
+  proTier: ProTier;
+  privacyAccepted: boolean;
+  vaultPinCipher?: string;
+}
+
+export interface LibraryTabSummary {
+  totalMovies: number;
+  totalSeries: number;
+  totalEpisodes: number;
+}

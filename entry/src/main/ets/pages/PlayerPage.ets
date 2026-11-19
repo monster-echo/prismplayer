@@ -1,0 +1,2411 @@
+import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { window } from '@kit.ArkUI';
+import { fileIo as fs, picker } from '@kit.CoreFileKit';
+import { KeyCode } from '@kit.InputKit';
+import { util } from '@kit.ArkTS';
+import {
+  IjkMediaPlayer,
+  OnCompletionListener,
+  OnErrorListener,
+  OnPreparedListener,
+  OnVideoSizeChangedListener
+} from '@ohos/ijkplayer';
+import prismNative from 'libprismplayer.so';
+import { AppConstants } from '../common/Constants';
+import { Formatters } from '../common/Formatters';
+import { ThemeManager } from '../common/ThemeManager';
+import {
+  AspectMode,
+  DecoderEngineMode,
+  ExternalSubtitleTrack,
+  MediaItem,
+  MediaSource,
+  PlayerLaunchParams,
+  PlayerTrackItem,
+  SubtitleCue,
+  SubtitleLangTag,
+  SubtitleLanguageMode
+} from '../common/Types';
+import { SubtitleOverlay } from '../components/SubtitleOverlay';
+import { SubtitleMaskBand } from '../components/SubtitleMaskBand';
+import { computePictureRect, PictureRect } from '../common/VideoLayout';
+import { AppStore } from '../services/AppStore';
+import { AVSessionService } from '../services/AVSessionService';
+import { BurnSubDetector } from '../services/BurnSubDetector';
+import { RemoteSourceClient } from '../services/RemoteSourceClient';
+import { SubtitleEngine } from '../services/SubtitleEngine';
+import { OnlineSubtitleResult, SubtitleService } from '../services/SubtitleService';
+
+interface ResolvedPlaybackUrl {
+  url: string;
+  isLocalFd: boolean;
+}
+
+interface IjkAudioStream {
+  streamIndex: number;
+  language: string;
+  codec: string;
+  label: string;
+}
+
+interface IjkStreamInfo {
+  index?: number;
+  type?: string;
+  codec_type?: string;
+  codec_name?: string;
+  language?: string;
+}
+
+interface IjkMediaMeta {
+  streams?: IjkStreamInfo[];
+}
+
+interface IjkMediaInfo {
+  audioDecoder?: string;
+  videoDecoder?: string;
+  meta?: string;
+}
+
+@Entry
+@ComponentV2
+struct PlayerPage {
+  @Local store: AppStore = AppStore.getInstance();
+  @Local mediaItem: MediaItem | null = null;
+  @Local mediaSource: MediaSource | undefined = undefined;
+
+  @Local engineMode: DecoderEngineMode = 'native_hw';
+  @Local isPlaying: boolean = false;
+  @Local isBuffering: boolean = true;
+  @Local positionMs: number = 0;
+  @Local durationMs: number = 0;
+  @Local videoWidth: number = 1920;
+  @Local videoHeight: number = 1080;
+  @Local playbackRate: number = 1.0;
+  @Local volume: number = 1.0;
+  @Local muted: boolean = false;
+  @Local screenBrightness: number = 1.0;
+  @Local aspectMode: AspectMode = 'fit';
+
+  @Local showControls: boolean = true;
+  @Local screenLocked: boolean = false;
+  @Local isFullscreen: boolean = false;
+  @Local drawerTab: 'none' | 'subtitle' | 'settings' = 'none';
+  @Local showStatsOsd: boolean = false;
+  @Local errorBanner: string = '';
+  @Local toastText: string = '';
+  @Local viewportWidthVp: number = 360;
+  @Local viewportHeightVp: number = 780;
+  @Local gestureKind: 'none' | 'seek' | 'vol' | 'bright' = 'none';
+  @Local gestureLabel: string = '';
+  @Local gestureSubLabel: string = '';
+  @Local gestureRatio: number = 0;
+
+  @Local tracks: PlayerTrackItem[] = [];
+  @Local selectedAudioTrack: number = -1;
+  @Local selectedNativeSubtitleTrack: number = -1;
+  @Local ijkAudioStreams: IjkAudioStream[] = [];
+  @Local selectedIjkAudioStream: number = -1;
+  @Local externalTracks: ExternalSubtitleTrack[] = [];
+  @Local enabledTrackIds: string[] = [];
+  @Local subtitleEnabled: boolean = true;
+  @Local subtitleDelayMs: number = 0;
+  @Local subtitleFontFp: number = 20;
+  @Local languageMode: SubtitleLanguageMode = 'all';
+  @Local subtitleBgEnabled: boolean = true;
+  @Local subtitleBgOpacity: number = 35;
+  @Local subtitleOffsetVp: number = 0;
+  @Local activeCues: SubtitleCue[] = [];
+  // Burned-in subtitle occlusion (English-learning mask): band normalized against picture area
+  @Local maskEnabled: boolean = false;
+  @Local maskYTop: number = 0.78;
+  @Local maskYBottom: number = 0.96;
+  @Local maskAdjusting: boolean = false;
+  @Local maskPeeking: boolean = false;
+  @Local detectingMask: boolean = false;
+
+  @Local proxyHitRate: string = '0%';
+  @Local proxyBytesText: string = '0 MB';
+  @Local proxyResolvedUrl: string = '';
+  @Local decodeRouteReason: string = '';
+  @Local videoSavedLocal: boolean = false;
+  @Local savingVideo: boolean = false;
+  @Local isFavorite: boolean = false;
+  @Local subtitleTranslateEnabled: boolean = false;
+  @Local subtitleTtsEnabled: boolean = false;
+  @Local subSearchQuery: string = '';
+  @Local subSearching: boolean = false;
+  @Local autoMatching: boolean = false;
+  @Local subSearchResults: OnlineSubtitleResult[] = [];
+
+  private nativePlayerId: number = 0;
+  private nativeSurfaceReady: boolean = false;
+  private ijkPlayer: IjkMediaPlayer | null = null;
+  private ijkContext: object | null = null;
+  private activeStreamId: string = '';
+  private openedFd: number = -1;
+  private startPosMs: number = 0;
+  private appliedStartSeek: boolean = false;
+  private isSeekingSlider: boolean = false;
+  private gestureStartPosMs: number = 0;
+  private gestureStartVol: number = 1.0;
+  private gestureStartBright: number = 0.8;
+  private lastTouchX: number = -1;
+  private panZone: 'none' | 'seek' | 'vol' | 'bright' = 'none';
+  private enteredInPortrait: boolean = true;
+  private resumeAudioTrackIndex: number = -1;
+  private resumeSubtitleTrackIndex: number = -1;
+  private appliedResumeTracks: boolean = false;
+  // False until the user explicitly configures the mask for this video (persisted with -1 sentinel before that)
+  private maskConfigured: boolean = false;
+
+  private tickTimer: number = -1;
+  private hideControlsTimer: number = -1;
+  private avSession: AVSessionService = new AVSessionService();
+
+  aboutToAppear(): void {
+    ThemeManager.setPlayerImmersive(true);
+    this.enteredInPortrait = !this.store.isLandscape;
+    const rawParams = this.getUIContext().getRouter().getParams() as PlayerLaunchParams | undefined;
+    if (rawParams && rawParams.item) {
+      this.mediaItem = rawParams.item;
+      this.mediaSource = rawParams.source;
+      this.startPosMs = rawParams.startPositionMs || 0;
+      this.durationMs = rawParams.item.durationMs || 0;
+      this.videoSavedLocal = rawParams.item.streamUrl.startsWith('/') || rawParams.item.streamUrl.startsWith('file://');
+      this.isFavorite = rawParams.item.isFavorite === true;
+      this.subSearchQuery = rawParams.item.seriesTitle || rawParams.item.title || '';
+    }
+    if (this.mediaItem) {
+      const route = Formatters.selectDecodeEngine(
+        this.mediaItem,
+        this.store.settings.preferHardwareDecode,
+        this.store.settings.hardwareSupportedFormats
+      );
+      this.engineMode = route.engine;
+      this.decodeRouteReason = route.reason;
+    } else {
+      this.engineMode = this.store.settings.preferHardwareDecode ? 'native_hw' : 'ffmpeg_sw';
+    }
+    if (this.mediaItem && this.mediaItem.sourceType === 'bilibili') {
+      // B 站 CDN 校验 Referer，只有 ijk 可注入自定义头，强制软解引擎
+      this.engineMode = 'ffmpeg_sw';
+    }
+    this.subtitleFontFp = this.store.settings.subtitleFontSizeFp;
+    this.languageMode = this.store.settings.subtitleLanguageMode;
+    this.subtitleBgEnabled = this.store.settings.subtitleBgEnabled;
+    this.subtitleBgOpacity = this.store.settings.subtitleBgOpacityPercent;
+    this.subtitleOffsetVp = this.store.settings.subtitleVerticalOffsetVp;
+    if (rawParams) {
+      this.resumeAudioTrackIndex = rawParams.audioTrackIndex !== undefined ? rawParams.audioTrackIndex : -1;
+      this.resumeSubtitleTrackIndex = rawParams.subtitleTrackIndex !== undefined ? rawParams.subtitleTrackIndex : -1;
+      if (rawParams.subtitleDelayMs !== undefined && rawParams.subtitleDelayMs !== 0) {
+        this.subtitleDelayMs = rawParams.subtitleDelayMs;
+      }
+      if (rawParams.playbackRate !== undefined && rawParams.playbackRate > 0) {
+        this.playbackRate = rawParams.playbackRate;
+      }
+    }
+    // Resume memory: fall back to the saved watch record so every launch path restores tracks / rate / delay
+    if (this.mediaItem) {
+      const hist = this.store.getHistoryForItem(this.mediaItem.id);
+      if (hist && !hist.finished) {
+        this.resumeAudioTrackIndex = this.resumeAudioTrackIndex >= 0 ? this.resumeAudioTrackIndex : hist.audioTrackIndex;
+        this.resumeSubtitleTrackIndex = this.resumeSubtitleTrackIndex >= 0 ? this.resumeSubtitleTrackIndex : hist.subtitleTrackIndex;
+        if (!(rawParams && rawParams.subtitleDelayMs !== undefined) && hist.subtitleDelayMs !== 0) {
+          this.subtitleDelayMs = hist.subtitleDelayMs;
+        }
+        if (!(rawParams && rawParams.playbackRate !== undefined) && hist.playbackRate > 0) {
+          this.playbackRate = hist.playbackRate;
+        }
+      }
+      // Burned-in subtitle mask: explicit per-video config wins, otherwise apply the global default
+      if (hist && hist.maskEnabled >= 0) {
+        this.maskConfigured = true;
+        this.maskEnabled = hist.maskEnabled === 1;
+        if (hist.maskYTop >= 0 && hist.maskYTop < 1 && hist.maskYBottom > hist.maskYTop && hist.maskYBottom <= 1) {
+          this.maskYTop = hist.maskYTop;
+          this.maskYBottom = hist.maskYBottom;
+        }
+      } else {
+        this.maskEnabled = this.store.settings.burnSubMaskDefault;
+      }
+    }
+
+    this.store.ensureNativeProxy();
+    this.loadInitialSubtitle();
+    this.startTickLoop();
+    this.scheduleHideControls();
+  }
+
+  aboutToDisappear(): void {
+    this.stopTickLoop();
+    if (this.hideControlsTimer >= 0) {
+      clearTimeout(this.hideControlsTimer);
+      this.hideControlsTimer = -1;
+    }
+    this.persistProgressNow();
+    this.teardownPlayers();
+    SubtitleService.stopSpeaking();
+    this.avSession.release();
+    this.setWindowKeepScreenOn(false);
+    this.restoreWindowDefaults();
+  }
+
+  private restoreWindowDefaults(): void {
+    ThemeManager.setPlayerImmersive(false);
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      window.getLastWindow(ctx).then((win) => {
+        win.setWindowBrightness(-1).catch(() => {});
+        win.setWindowSystemBarEnable(['status', 'navigation']).catch(() => {});
+        win.setWindowLayoutFullScreen(false).catch(() => {});
+        if (this.store.currentBreakpoint === 'sm' || this.store.currentBreakpoint === 'md') {
+          win.setPreferredOrientation(
+            this.enteredInPortrait ? window.Orientation.PORTRAIT : window.Orientation.UNSPECIFIED
+          ).catch(() => {});
+        }
+      });
+    } catch (_e) {
+      // Ignore
+    }
+  }
+
+  private applyBrightness(level: number): void {
+    this.screenBrightness = Math.max(0.05, Math.min(1.0, level));
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      window.getLastWindow(ctx).then((win) => {
+        // Software overlay dimmer guarantees immediate preview on emulators; window brightness sets panel luminance on devices
+        win.setWindowBrightness(Math.max(0.05, this.screenBrightness)).catch(() => {});
+      });
+    } catch (_e) {
+      // Ignore
+    }
+  }
+
+  private setWindowKeepScreenOn(on: boolean): void {
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      window.getLastWindow(ctx).then((win) => {
+        win.setWindowKeepScreenOn(on);
+      });
+    } catch (_e) {
+      // Ignore
+    }
+  }
+
+  private toggleFullscreen(): void {
+    this.isFullscreen = !this.isFullscreen;
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      window.getLastWindow(ctx).then((win) => {
+        if (this.store.currentBreakpoint === 'lg' || this.store.currentBreakpoint === 'xl') {
+          if (this.isFullscreen) win.maximize();
+          else win.recover();
+        } else {
+          win.setWindowLayoutFullScreen(this.isFullscreen).catch(() => {});
+          win.setWindowSystemBarEnable(this.isFullscreen ? [] : ['status', 'navigation']).catch(() => {});
+          win.setPreferredOrientation(
+            this.isFullscreen
+              ? window.Orientation.LANDSCAPE
+              : (this.enteredInPortrait ? window.Orientation.PORTRAIT : window.Orientation.UNSPECIFIED)
+          ).catch(() => {});
+        }
+      });
+    } catch (_e) {
+      // Ignore
+    }
+    this.showBriefToast(this.isFullscreen ? '已切换横屏影院全屏' : '已退出全屏');
+  }
+
+  private async saveCurrentVideoOffline(exportToPicker: boolean): Promise<void> {
+    if (!this.mediaItem || this.savingVideo) return;
+    this.savingVideo = true;
+    this.showBriefToast('正在下载并保存视频至本地...');
+    const res = await this.store.saveMediaItemOffline(this.mediaItem, this.mediaSource, exportToPicker);
+    this.savingVideo = false;
+    if (res.ok) {
+      this.videoSavedLocal = true;
+    }
+    this.showBriefToast(res.message);
+  }
+
+  private showBriefToast(msg: string): void {
+    this.toastText = msg;
+    setTimeout(() => {
+      if (this.toastText === msg) {
+        this.toastText = '';
+      }
+    }, 1800);
+  }
+
+  private scheduleHideControls(): void {
+    if (this.hideControlsTimer >= 0) {
+      clearTimeout(this.hideControlsTimer);
+    }
+    this.hideControlsTimer = setTimeout(() => {
+      if (this.isPlaying && this.drawerTab === 'none') {
+        this.showControls = false;
+      }
+    }, 3500);
+  }
+
+  private wakeControls(): void {
+    this.showControls = true;
+    this.scheduleHideControls();
+  }
+
+  private appendExternalTrack(track: ExternalSubtitleTrack): void {
+    if (this.externalTracks.some(t => t.id === track.id)) return;
+    const next: ExternalSubtitleTrack[] = this.externalTracks.slice();
+    next.push(track);
+    this.externalTracks = next;
+    if (this.enabledTrackIds.indexOf(track.id) < 0) {
+      const nextIds = this.enabledTrackIds.slice();
+      nextIds.push(track.id);
+      this.enabledTrackIds = nextIds;
+    }
+  }
+
+  private toggleTrackEnabled(id: string): void {
+    const idx = this.enabledTrackIds.indexOf(id);
+    const nextIds = this.enabledTrackIds.slice();
+    if (idx >= 0) {
+      nextIds.splice(idx, 1);
+    } else {
+      nextIds.push(id);
+    }
+    this.enabledTrackIds = nextIds;
+  }
+
+  private removeExternalTrack(id: string): void {
+    this.externalTracks = this.externalTracks.filter(t => t.id !== id);
+    this.enabledTrackIds = this.enabledTrackIds.filter(t => t !== id);
+  }
+
+  private langBadge(tag: SubtitleLangTag): string {
+    if (tag === 'zh') return '中文';
+    if (tag === 'en') return '英文';
+    if (tag === 'zh-en') return '双语';
+    return '未知';
+  }
+
+  private async loadInitialSubtitle(overrideSubUrl?: string): Promise<void> {
+    // 旧条目没有扫描期字幕关联时，播放中惰性补探测同目录 sidecar 字幕并写回库
+    if (!overrideSubUrl && this.mediaItem && !(this.mediaItem.subtitleTracks && this.mediaItem.subtitleTracks.length > 0)) {
+      const probed = await this.store.probeSubtitlesForItem(this.mediaItem, this.mediaSource);
+      if (probed.length > 0) {
+        this.mediaItem.subtitleTracks = probed;
+      }
+    }
+    if (!overrideSubUrl && this.mediaItem && this.mediaItem.subtitleTracks && this.mediaItem.subtitleTracks.length > 0) {
+      const tracks = this.mediaItem.subtitleTracks;
+      for (let i = 0; i < tracks.length; i++) {
+        const t = tracks[i];
+        if (!t.url) continue;
+        try {
+          const content = await RemoteSourceClient.fetchText(t.url, this.mediaSource);
+          const parsed = SubtitleEngine.parse(content, t.label, t.url);
+          if (i === 0) {
+            this.appendExternalTrack(parsed);
+          } else if (!this.externalTracks.some(x => x.id === parsed.id)) {
+            const next = this.externalTracks.slice();
+            next.push(parsed);
+            this.externalTracks = next;
+          }
+        } catch (_e) {
+          // Non-fatal if an individual remote subtitle track fails
+        }
+      }
+      return;
+    }
+
+    const subUrl = overrideSubUrl || (this.mediaItem ? this.mediaItem.subtitleUrl : '');
+    if (!subUrl) return;
+    if (subUrl.startsWith('builtin://')) {
+      const content = this.store.getBuiltInDemoSubtitle(subUrl);
+      if (content) {
+        this.appendExternalTrack(SubtitleEngine.parse(content, '内置演示特效字幕', subUrl));
+      }
+      return;
+    }
+    try {
+      const content = await RemoteSourceClient.fetchText(subUrl, this.mediaSource);
+      const slash = subUrl.lastIndexOf('/');
+      const name = slash >= 0 ? decodeURIComponent(subUrl.substring(slash + 1)) : '外挂字幕';
+      this.appendExternalTrack(SubtitleEngine.parse(content, name, subUrl));
+    } catch (_e) {
+      // Non-fatal if subtitle fetch fails
+    }
+  }
+
+  private async autoMatchSubtitle(): Promise<void> {
+    if (this.autoMatching) return;
+    const item = this.mediaItem;
+    if (!item) return;
+    this.autoMatching = true;
+    try {
+      // 查询词优先用文件名解析出的干净片名（去掉「第一季/第 1 集/1080p」等噪声，
+      // 集数信息由季集感知评分处理），命中率远高于带集数的刮削标题。
+      const fileName = item.fileName || '';
+      let query = (this.subSearchQuery || item.title).trim();
+      if (fileName) {
+        const parsed = Formatters.parseMediaFilename(fileName);
+        if (parsed.cleanTitle && parsed.cleanTitle.length >= 2) {
+          query = parsed.cleanTitle;
+        }
+      }
+      // 中文/刮削标题在 SubDL（英文库）命中率低：先经 TMDB（zh-CN）解析出英文原名再查询
+      if (this.store.settings.tmdbApiKey) {
+        try {
+          const cands = await this.store.searchScrapeCandidates(item, query);
+          if (cands.length > 0 && cands[0].originalTitle && cands[0].originalTitle.length >= 2) {
+            query = cands[0].originalTitle;
+          }
+        } catch (_e) {
+          // TMDB 解析失败则退回原标题查询
+        }
+      }
+      const results = await SubtitleService.searchAllSubtitles(query, fileName, 'all', this.store.settings.subdlApiKey);
+      if (results.length === 0) {
+        this.showBriefToast('未找到可匹配的在线字幕，可手动输入英文片名搜索');
+        return;
+      }
+      this.subSearchResults = results;
+      this.subSearchQuery = query;
+      await this.mountOnlineSubtitle(results[0]);
+    } catch (e) {
+      this.showBriefToast(e instanceof Error ? e.message : '自动匹配失败');
+    } finally {
+      this.autoMatching = false;
+    }
+  }
+
+  private async runOnlineSubtitleSearch(): Promise<void> {
+    const q = this.subSearchQuery.trim();
+    if (!q || this.subSearching) return;
+    this.subSearching = true;
+    try {
+      const fileName = this.mediaItem ? this.mediaItem.fileName : '';
+      this.subSearchResults = await SubtitleService.searchAllSubtitles(q, fileName, 'all', this.store.settings.subdlApiKey);
+      if (this.subSearchResults.length === 0) {
+        this.showBriefToast('未找到匹配的在线字幕，可尝试英文片名');
+      }
+    } finally {
+      this.subSearching = false;
+    }
+  }
+
+  private async mountOnlineSubtitle(res: OnlineSubtitleResult): Promise<void> {
+    try {
+      this.showBriefToast(`正在下载 ${res.langLabel} 字幕...`);
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const text = await SubtitleService.downloadSubtitleText(res.downloadUrl, ctx.cacheDir);
+      const trk = SubtitleEngine.parse(text, `${res.langLabel} · ${res.title}`, res.downloadUrl);
+      this.appendExternalTrack(trk);
+      this.subtitleEnabled = true;
+      this.showBriefToast(`已加载在线字幕：${res.langLabel}`);
+    } catch (e) {
+      this.showBriefToast(e instanceof Error ? e.message : '在线字幕加载失败');
+    }
+  }
+
+  private async importLocalSubtitle(): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const docPicker = new picker.DocumentViewPicker(ctx);
+      const opts = new picker.DocumentSelectOptions();
+      opts.maxSelectNumber = 8;
+      const uris = await docPicker.select(opts);
+      if (!uris || uris.length === 0) return;
+
+      let loaded = 0;
+      let lastName = '';
+      for (let i = 0; i < uris.length; i++) {
+        try {
+          const file = fs.openSync(uris[i], fs.OpenMode.READ_ONLY);
+          const stat = fs.statSync(file.fd);
+          const buf = new ArrayBuffer(Math.min(stat.size, 8 * 1024 * 1024));
+          fs.readSync(file.fd, buf);
+          fs.closeSync(file.fd);
+
+          const text = util.TextDecoder.create('utf-8').decodeToString(new Uint8Array(buf));
+          const decoded = decodeURIComponent(uris[i]);
+          const name = decoded.substring(decoded.lastIndexOf('/') + 1);
+          this.appendExternalTrack(SubtitleEngine.parse(text, name, uris[i]));
+          lastName = name;
+          loaded++;
+        } catch (_e) {
+          // Skip unreadable files and keep importing the rest
+        }
+      }
+      if (loaded > 0) {
+        this.subtitleEnabled = true;
+        this.showBriefToast(loaded > 1 ? `已加载 ${loaded} 条字幕轨道` : `已加载字幕：${lastName}`);
+      } else {
+        this.showBriefToast('加载字幕文件失败');
+      }
+    } catch (_e) {
+      this.showBriefToast('加载字幕文件失败');
+    }
+  }
+
+  private async resolvePlaybackUrl(): Promise<ResolvedPlaybackUrl> {
+    if (!this.mediaItem) return { url: '', isLocalFd: false };
+    let rawUrl = this.mediaItem.streamUrl;
+    if (rawUrl.startsWith('file://') || rawUrl.startsWith('content://') || rawUrl.startsWith('/')) {
+      return { url: rawUrl, isLocalFd: true };
+    }
+
+    const dynamicResolved = await RemoteSourceClient.resolvePlayableStream(this.mediaItem, this.mediaSource);
+    rawUrl = dynamicResolved.streamUrl;
+    if (dynamicResolved.subtitleUrl && this.externalTracks.length === 0) {
+      this.loadInitialSubtitle(dynamicResolved.subtitleUrl);
+    }
+
+    // HLS (.m3u8) playlists contain relative segment URLs so players must fetch them directly from origin
+    const lower = rawUrl.toLowerCase();
+    if (lower.includes('.m3u8') || dynamicResolved.qualityTag === 'HLS') {
+      return { url: rawUrl, isLocalFd: false };
+    }
+    if (this.mediaItem.sourceType === 'bilibili') {
+      return { url: rawUrl, isLocalFd: false };
+    }
+
+    // Route progressive network / SMB / Plex / Emby / S3 / WebDAV / Alist URL through C++ Range-Caching Proxy
+    const streamId = `s_${Date.now()}`;
+    this.activeStreamId = streamId;
+    const proxyCfg = RemoteSourceClient.buildProxyConfig(rawUrl, this.mediaSource);
+    const proxied = prismNative.registerProxyStream(streamId, proxyCfg);
+    return { url: proxied || rawUrl, isLocalFd: false };
+  }
+
+  private teardownPlayers(): void {
+    if (this.nativePlayerId > 0) {
+      try {
+        prismNative.stopPlayer(this.nativePlayerId);
+        prismNative.destroyPlayer(this.nativePlayerId);
+      } catch (_e) {
+        // Ignore
+      }
+      this.nativePlayerId = 0;
+    }
+    if (this.ijkPlayer) {
+      try {
+        this.ijkPlayer.stop();
+        this.ijkPlayer.release();
+      } catch (_e) {
+        // Ignore
+      }
+      this.ijkPlayer = null;
+    }
+    if (this.activeStreamId) {
+      try {
+        prismNative.unregisterProxyStream(this.activeStreamId);
+      } catch (_e) {
+        // Ignore
+      }
+      this.activeStreamId = '';
+    }
+    if (this.openedFd >= 0) {
+      try {
+        fs.closeSync(this.openedFd);
+      } catch (_e) {
+        // Ignore
+      }
+      this.openedFd = -1;
+    }
+  }
+
+  private async startNativeEngine(): Promise<void> {
+    if (!this.mediaItem || !this.nativeSurfaceReady) return;
+    this.teardownPlayers();
+    this.errorBanner = '';
+    this.isBuffering = true;
+    this.appliedStartSeek = false;
+
+    let resolved: ResolvedPlaybackUrl;
+    try {
+      resolved = await this.resolvePlaybackUrl();
+    } catch (e) {
+      this.isBuffering = false;
+      this.errorBanner = Formatters.toFriendlyError(e instanceof Error ? e.message : String(e), true);
+      return;
+    }
+
+    const pid = prismNative.createPlayer();
+    this.nativePlayerId = pid;
+    prismNative.bindSurface(pid, 'prism_video_surface');
+    prismNative.setPlayerEventCallback(pid, (ev) => {
+      if (this.nativePlayerId !== pid) return;
+      if (ev.type === 'state') {
+        // 2: PREPARED, 3: PLAYING, 4: PAUSED, 6: COMPLETED
+        if (ev.state === 2) {
+          this.isBuffering = false;
+          if (this.startPosMs > 2000 && !this.appliedStartSeek) {
+            this.appliedStartSeek = true;
+            prismNative.seekPlayer(pid, this.startPosMs, 2);
+          }
+          prismNative.playPlayer(pid);
+          if (this.playbackRate !== 1.0) {
+            prismNative.setPlayerRate(pid, this.playbackRate);
+          }
+          this.refreshNativeTracks();
+          this.applyResumeTrackSelection();
+        } else if (ev.state === 3) {
+          this.isPlaying = true;
+          this.isBuffering = false;
+          this.setWindowKeepScreenOn(true);
+          this.syncAVSession();
+        } else if (ev.state === 4 || ev.state === 5) {
+          this.isPlaying = false;
+          this.setWindowKeepScreenOn(false);
+          this.syncAVSession();
+        } else if (ev.state === 6) {
+          this.isPlaying = false;
+          this.persistProgressNow(true);
+        }
+      } else if (ev.type === 'position' && !this.isSeekingSlider) {
+        this.positionMs = ev.positionMs || 0;
+      } else if (ev.type === 'duration') {
+        this.durationMs = ev.durationMs || this.durationMs;
+      } else if (ev.type === 'resolution') {
+        this.videoWidth = ev.width || this.videoWidth;
+        this.videoHeight = ev.height || this.videoHeight;
+      } else if (ev.type === 'buffering') {
+        this.isBuffering = ev.bufferingType === 1;
+      } else if (ev.type === 'tracksReady') {
+        this.refreshNativeTracks();
+      } else if (ev.type === 'error') {
+        this.isBuffering = false;
+        this.isPlaying = false;
+        this.showBriefToast('正在切换至兼容解码模式...');
+        this.switchEngine('ffmpeg_sw');
+      }
+    });
+
+    if (resolved.isLocalFd) {
+      try {
+        const f = fs.openSync(resolved.url, fs.OpenMode.READ_ONLY);
+        const st = fs.statSync(f.fd);
+        this.openedFd = f.fd;
+        prismNative.setFdSource(pid, f.fd, 0, st.size);
+      } catch (_e) {
+        this.errorBanner = '无法打开本地视频文件';
+        return;
+      }
+    } else {
+      prismNative.setUrlSource(pid, resolved.url);
+    }
+
+    prismNative.preparePlayer(pid);
+    this.startAVSession();
+  }
+
+  private async startIjkEngine(): Promise<void> {
+    if (!this.mediaItem || !this.ijkContext) return;
+    this.teardownPlayers();
+    this.errorBanner = '';
+    this.isBuffering = true;
+    this.appliedStartSeek = false;
+
+    let resolved: ResolvedPlaybackUrl;
+    try {
+      resolved = await this.resolvePlaybackUrl();
+    } catch (e) {
+      this.isBuffering = false;
+      this.errorBanner = Formatters.toFriendlyError(e instanceof Error ? e.message : String(e), true);
+      return;
+    }
+
+    const ijk = new IjkMediaPlayer('ijk_video_surface');
+    ijk.setContext(this.ijkContext, 'ijk_video_surface');
+    ijk.native_setup();
+    ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, 'mediacodec', '0');
+    ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, 'opensles', '0');
+    ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, 'start-on-prepared', '1');
+    ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, 'fastseek', '1');
+    ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, 'overlay-format', '842225234');
+    ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, 'reconnect', '1');
+    if (this.mediaItem && this.mediaItem.sourceType === 'bilibili') {
+      ijk.setOption(
+        IjkMediaPlayer.OPT_CATEGORY_FORMAT,
+        'headers',
+        'Referer: https://www.bilibili.com/\r\nUser-Agent: Mozilla/5.0 (Linux; Android 12; HarmonyOS NEXT) Mobile Safari/537.36'
+      );
+    }
+    ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, 'timeout', '10000000');
+
+    ijk.setDataSource(resolved.url);
+
+    const onPrepared: OnPreparedListener = {
+      onPrepared: () => {
+        this.isBuffering = false;
+        this.durationMs = ijk.getDuration() || this.durationMs;
+        if (this.startPosMs > 2000 && !this.appliedStartSeek) {
+          this.appliedStartSeek = true;
+          ijk.seekTo(`${Math.round(this.startPosMs)}`);
+        }
+        ijk.start();
+        this.isPlaying = true;
+        if (this.playbackRate !== 1.0) {
+          ijk.setSpeed(`${this.playbackRate}`);
+        }
+        this.refreshIjkAudioStreams();
+        this.setWindowKeepScreenOn(true);
+        this.syncAVSession();
+      }
+    };
+    const onVideoSize: OnVideoSizeChangedListener = {
+      onVideoSizeChanged: (w: number, h: number) => {
+        if (w > 0 && h > 0) {
+          this.videoWidth = w;
+          this.videoHeight = h;
+        }
+      }
+    };
+    const onComplete: OnCompletionListener = {
+      onCompletion: () => {
+        this.isPlaying = false;
+        this.persistProgressNow(true);
+      }
+    };
+    const onError: OnErrorListener = {
+      onError: (what: number, extra: number) => {
+        this.isBuffering = false;
+        this.isPlaying = false;
+        const isRemote = !!(this.mediaItem && this.mediaItem.streamUrl.startsWith('http'));
+        this.errorBanner = Formatters.toFriendlyError(`what=${what}, extra=${extra}`, isRemote);
+      }
+    };
+
+    ijk.setOnPreparedListener(onPrepared);
+    ijk.setOnVideoSizeChangedListener(onVideoSize);
+    ijk.setOnCompletionListener(onComplete);
+    ijk.setOnErrorListener(onError);
+    ijk.setMessageListener();
+    ijk.prepareAsync();
+    this.ijkPlayer = ijk;
+    this.startAVSession();
+  }
+
+  private switchEngine(target: DecoderEngineMode): void {
+    if (this.engineMode === target && ((target === 'native_hw' && this.nativePlayerId > 0) || (target === 'ffmpeg_sw' && this.ijkPlayer !== null))) {
+      return;
+    }
+    this.startPosMs = this.positionMs;
+    this.engineMode = target;
+    this.showBriefToast(target === 'native_hw' ? '已切换至系统硬件解码' : '已切换至 FFmpeg 软解引擎');
+    if (target === 'native_hw') {
+      this.startNativeEngine();
+    } else {
+      this.startIjkEngine();
+    }
+  }
+
+  private refreshNativeTracks(): void {
+    if (this.nativePlayerId <= 0) return;
+    try {
+      const nativeTracks = prismNative.getPlayerTracks(this.nativePlayerId);
+      const list: PlayerTrackItem[] = [];
+      for (let i = 0; i < nativeTracks.length; i++) {
+        const t = nativeTracks[i];
+        const kind = t.trackType === 0 ? 'audio' : (t.trackType === 1 ? 'video' : 'subtitle');
+        const lang = t.language || 'und';
+        const title = t.title || (kind === 'audio' ? `音轨 ${i + 1}` : `轨道 ${i + 1}`);
+        list.push({
+          index: t.index,
+          kind,
+          label: `${title} (${lang})`,
+          language: lang,
+          codec: t.mimeType || '',
+          details: kind === 'audio' && t.channels > 0 ? `${t.channels}ch · ${t.sampleRate}Hz` : ''
+        });
+      }
+      this.tracks = list;
+    } catch (_e) {
+      // Ignore on devices where track metadata is restricted
+    }
+  }
+
+  // One-shot: re-apply the audio / embedded-subtitle track saved in watch history
+  private applyResumeTrackSelection(): void {
+    if (this.appliedResumeTracks || this.nativePlayerId <= 0) return;
+    this.appliedResumeTracks = true;
+    if (this.resumeAudioTrackIndex >= 0) {
+      const found = this.tracks.filter(t => t.kind === 'audio' && t.index === this.resumeAudioTrackIndex);
+      if (found.length > 0 && prismNative.selectPlayerTrack(this.nativePlayerId, this.resumeAudioTrackIndex) === 0) {
+        this.selectedAudioTrack = this.resumeAudioTrackIndex;
+      }
+    }
+    if (this.resumeSubtitleTrackIndex >= 0) {
+      const found = this.tracks.filter(t => t.kind === 'subtitle' && t.index === this.resumeSubtitleTrackIndex);
+      if (found.length > 0 && prismNative.selectPlayerTrack(this.nativePlayerId, this.resumeSubtitleTrackIndex) === 0) {
+        this.selectedNativeSubtitleTrack = this.resumeSubtitleTrackIndex;
+      }
+    }
+  }
+
+  private refreshIjkAudioStreams(): void {
+    const ijk = this.ijkPlayer;
+    if (!ijk) return;
+    const list: IjkAudioStream[] = [];
+    try {
+      const info = ijk.getMediaInfo() as IjkMediaInfo;
+      const meta = JSON.parse(info.meta || '{}') as IjkMediaMeta;
+      const streams = meta.streams || [];
+      for (let i = 0; i < streams.length; i++) {
+        const st = streams[i];
+        const type = st.type || st.codec_type || '';
+        if (type !== 'audio') continue;
+        const lang = st.language || 'und';
+        const codec = st.codec_name || '';
+        list.push({
+          streamIndex: typeof st.index === 'number' ? st.index : i,
+          language: lang,
+          codec,
+          label: `音轨 ${list.length + 1} · ${codec}${lang !== 'und' ? ` (${lang})` : ''}`
+        });
+      }
+    } catch (_e) {
+      // Meta layout differs across ijk builds; fall back to the default-audio hint
+    }
+    this.ijkAudioStreams = list;
+  }
+
+  private selectIjkAudioStream(streamIndex: number): void {
+    const ijk = this.ijkPlayer;
+    if (!ijk) return;
+    try {
+      ijk.selectTrack(`${streamIndex}`);
+      this.selectedIjkAudioStream = streamIndex;
+      const found = this.ijkAudioStreams.filter(s => s.streamIndex === streamIndex);
+      this.showBriefToast(`已切换音轨：${found.length > 0 ? found[0].label : streamIndex}`);
+    } catch (_e) {
+      this.showBriefToast('切换音轨失败');
+    }
+  }
+
+  private selectNativeSubtitleTrack(index: number): void {
+    if (this.nativePlayerId <= 0) return;
+    if (prismNative.selectPlayerTrack(this.nativePlayerId, index) === 0) {
+      this.selectedNativeSubtitleTrack = index;
+      const found = this.tracks.filter(t => t.kind === 'subtitle' && t.index === index);
+      this.showBriefToast(`已选择内嵌字幕轨：${found.length > 0 ? found[0].label : index}`);
+    } else {
+      this.showBriefToast('内嵌字幕轨切换失败');
+    }
+  }
+
+  private deselectNativeSubtitleTrack(): void {
+    if (this.nativePlayerId <= 0) return;
+    if (this.selectedNativeSubtitleTrack >= 0) {
+      try {
+        prismNative.deselectPlayerTrack(this.nativePlayerId, this.selectedNativeSubtitleTrack);
+      } catch (_e) {
+        // Ignore deselect errors
+      }
+    }
+    this.selectedNativeSubtitleTrack = -1;
+    this.showBriefToast('已关闭内嵌字幕');
+  }
+
+  private togglePlayPause(): void {
+    if (this.engineMode === 'native_hw' && this.nativePlayerId > 0) {
+      if (this.isPlaying) {
+        prismNative.pausePlayer(this.nativePlayerId);
+        this.isPlaying = false;
+      } else {
+        prismNative.playPlayer(this.nativePlayerId);
+        this.isPlaying = true;
+      }
+    } else if (this.engineMode === 'ffmpeg_sw' && this.ijkPlayer) {
+      if (this.isPlaying) {
+        this.ijkPlayer.pause();
+        this.isPlaying = false;
+      } else {
+        this.ijkPlayer.start();
+        this.isPlaying = true;
+      }
+    }
+    this.wakeControls();
+    this.syncAVSession();
+  }
+
+  private seekTo(targetMs: number): void {
+    const clamped = Math.max(0, this.durationMs > 0 ? Math.min(this.durationMs, targetMs) : targetMs);
+    this.positionMs = clamped;
+    hilog.info(0x0001, 'PrismSeek', 'seekTo %{public}d engine=%{public}s', Math.round(clamped), this.engineMode);
+    if (this.engineMode === 'native_hw' && this.nativePlayerId > 0) {
+      prismNative.seekPlayer(this.nativePlayerId, Math.round(clamped), 2);
+    } else if (this.engineMode === 'ffmpeg_sw' && this.ijkPlayer) {
+      this.ijkPlayer.seekTo(`${Math.round(clamped)}`);
+    }
+    this.syncAVSession();
+  }
+
+  private setRate(rate: number): void {
+    const clamped = Math.max(0.5, Math.min(3.0, Number(rate.toFixed(2))));
+    this.playbackRate = clamped;
+    if (this.engineMode === 'native_hw' && this.nativePlayerId > 0) {
+      prismNative.setPlayerRate(this.nativePlayerId, clamped);
+    } else if (this.engineMode === 'ffmpeg_sw' && this.ijkPlayer) {
+      this.ijkPlayer.setSpeed(`${clamped}`);
+    }
+    this.showBriefToast(`倍速 ${clamped}x`);
+  }
+
+  private applyVolume(vol: number): void {
+    const clamped = Math.max(0, Math.min(1, vol));
+    this.volume = clamped;
+    const effective = this.muted ? 0 : clamped;
+    if (this.engineMode === 'native_hw' && this.nativePlayerId > 0) {
+      prismNative.setPlayerVolume(this.nativePlayerId, effective);
+    } else if (this.engineMode === 'ffmpeg_sw' && this.ijkPlayer) {
+      this.ijkPlayer.setVolume(`${effective}`, `${effective}`);
+    }
+  }
+
+  private startTickLoop(): void {
+    this.stopTickLoop();
+    this.tickTimer = setInterval(() => {
+      if (this.engineMode === 'ffmpeg_sw' && this.ijkPlayer && this.isPlaying && !this.isSeekingSlider) {
+        const pos = this.ijkPlayer.getCurrentPosition();
+        if (pos >= 0) this.positionMs = pos;
+        const dur = this.ijkPlayer.getDuration();
+        if (dur > 0) this.durationMs = dur;
+      }
+
+      if (this.subtitleEnabled && this.enabledTrackIds.length > 0) {
+        let merged: SubtitleCue[] = [];
+        for (let i = 0; i < this.externalTracks.length; i++) {
+          const trk = this.externalTracks[i];
+          if (this.enabledTrackIds.indexOf(trk.id) < 0) continue;
+          const found = SubtitleEngine.findActiveCues(trk.cues, this.positionMs, this.subtitleDelayMs);
+          merged = merged.concat(found);
+        }
+        if (this.subtitleTranslateEnabled && merged.length > 0) {
+          const translatedList: SubtitleCue[] = [];
+          for (let j = 0; j < merged.length; j++) {
+            const c = merged[j];
+            const cachedZh = SubtitleService.getCachedTranslation(c.text);
+            if (!cachedZh) {
+              SubtitleService.translateToChinese(c.text);
+              translatedList.push(c);
+            } else {
+              translatedList.push({
+                index: c.index,
+                startMs: c.startMs,
+                endMs: c.endMs,
+                text: cachedZh === c.text ? c.text : `${cachedZh}\n${c.text}`,
+                alignment: c.alignment,
+                colorHex: c.colorHex,
+                isBold: c.isBold,
+                isItalic: c.isItalic,
+                layer: c.layer
+              });
+            }
+          }
+          this.activeCues = translatedList;
+        } else {
+          this.activeCues = merged;
+        }
+        if (this.subtitleTtsEnabled && this.activeCues.length > 0 && this.isPlaying) {
+          const spokenLine = this.activeCues[0].text.split('\n')[0];
+          SubtitleService.speakSubtitle(spokenLine);
+        }
+      } else {
+        this.activeCues = [];
+      }
+
+      if (this.activeStreamId) {
+        try {
+          const st = prismNative.getProxyStats(this.activeStreamId);
+          const totalReq = st.cacheHits + st.cacheMisses;
+          const pct = totalReq > 0 ? Math.round((st.cacheHits / totalReq) * 100) : 0;
+          this.proxyHitRate = `${pct}% (${st.cacheHits}/${totalReq})`;
+          this.proxyBytesText = Formatters.formatBytes(st.bytesServed);
+          this.proxyResolvedUrl = st.resolvedUrl;
+        } catch (_e) {
+          // Ignore
+        }
+      }
+    }, 150);
+  }
+
+  private stopTickLoop(): void {
+    if (this.tickTimer >= 0) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = -1;
+    }
+  }
+
+  private startAVSession(): void {
+    if (!this.mediaItem) return;
+    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    this.avSession.startSession(
+      ctx,
+      this.mediaItem.id,
+      this.mediaItem.title,
+      this.mediaItem.qualityTag || 'PrismPlayer',
+      this.durationMs,
+      {
+        onPlay: () => { if (!this.isPlaying) this.togglePlayPause(); },
+        onPause: () => { if (this.isPlaying) this.togglePlayPause(); },
+        onSeek: (pos: number) => this.seekTo(pos)
+      }
+    );
+  }
+
+  private syncAVSession(): void {
+    this.avSession.updatePlaybackState(this.isPlaying, this.positionMs, this.playbackRate);
+  }
+
+  private async persistSubtitlePrefs(): Promise<void> {
+    const s = this.store.settings;
+    await this.store.updateSettings({
+      themeMode: s.themeMode,
+      cacheBudgetMb: s.cacheBudgetMb,
+      preferHardwareDecode: s.preferHardwareDecode,
+      hardwareSupportedFormats: s.hardwareSupportedFormats,
+      tmdbApiKey: s.tmdbApiKey,
+      tmdbApiHost: s.tmdbApiHost,
+      tmdbImageBase: s.tmdbImageBase,
+      autoSkipIntroSec: s.autoSkipIntroSec,
+      subtitleFontSizeFp: this.subtitleFontFp,
+      subtitleLanguageMode: this.languageMode,
+      subtitleBgEnabled: this.subtitleBgEnabled,
+      subtitleBgOpacityPercent: this.subtitleBgOpacity,
+      subtitleVerticalOffsetVp: this.subtitleOffsetVp,
+      burnSubMaskDefault: s.burnSubMaskDefault,
+      subdlApiKey: s.subdlApiKey,
+      proTier: s.proTier,
+      privacyAccepted: s.privacyAccepted,
+      vaultPinCipher: s.vaultPinCipher || ''
+    });
+  }
+
+  private persistProgressNow(finished: boolean = false): void {
+    if (!this.mediaItem) return;
+    const nearEnd = this.durationMs > 10000 && (this.durationMs - this.positionMs) < 5000;
+    // Forward the per-item burn-sub mask memory until a mask UI owns it
+    const prev = this.store.getHistoryForItem(this.mediaItem.id);
+    this.store.saveWatchProgress({
+      itemId: this.mediaItem.id,
+      title: this.mediaItem.title,
+      subtitleLabel: this.mediaItem.qualityTag,
+      posterUrl: this.mediaItem.posterUrl,
+      streamUrl: this.mediaItem.streamUrl,
+      sourceId: this.mediaItem.sourceId,
+      positionMs: Math.round(this.positionMs),
+      durationMs: Math.round(this.durationMs),
+      audioTrackIndex: this.selectedAudioTrack,
+      subtitleTrackIndex: this.selectedNativeSubtitleTrack,
+      subtitleDelayMs: this.subtitleDelayMs,
+      playbackRate: this.playbackRate,
+      // Once the mask UI owns this item (user toggled / adjusted / detected), page state wins; otherwise forward the stored value
+      maskEnabled: this.maskConfigured ? (this.maskEnabled ? 1 : 0) : (prev ? prev.maskEnabled : -1),
+      maskYTop: this.maskConfigured ? this.maskYTop : (prev ? prev.maskYTop : -1),
+      maskYBottom: this.maskConfigured ? this.maskYBottom : (prev ? prev.maskYBottom : -1),
+      updatedAt: Date.now(),
+      finished: finished || nearEnd
+    });
+  }
+
+  private isLocalPlayback(): boolean {
+    return !!this.mediaItem && BurnSubDetector.isLocalPlayable(this.mediaItem.streamUrl);
+  }
+
+  private maskPictureRect(): PictureRect {
+    return computePictureRect(this.viewportWidthVp, this.viewportHeightVp, this.getSurfaceAspect());
+  }
+
+  private setMaskEnabledNow(on: boolean): void {
+    this.maskEnabled = on;
+    this.maskConfigured = true;
+    this.persistProgressNow();
+    this.showBriefToast(on ? '已开启内嵌字幕遮挡' : '已关闭内嵌字幕遮挡');
+  }
+
+  private startMaskAdjust(): void {
+    this.drawerTab = 'none';
+    this.showControls = false;
+    this.maskAdjusting = true;
+    this.showBriefToast('拖动黑条上下边缘调整，完成后点「完成」');
+  }
+
+  private finishMaskAdjust(): void {
+    this.maskAdjusting = false;
+    this.showControls = true;
+    this.scheduleHideControls();
+    this.maskConfigured = true;
+    this.maskEnabled = true;
+    this.persistProgressNow();
+    this.showBriefToast('遮挡范围已保存');
+  }
+
+  private onMaskDrag(yTop: number, yBottom: number): void {
+    this.maskYTop = yTop;
+    this.maskYBottom = yBottom;
+  }
+
+  private async runBurnSubDetect(): Promise<void> {
+    if (!this.mediaItem || this.detectingMask) return;
+    if (!BurnSubDetector.isLocalPlayable(this.mediaItem.streamUrl)) {
+      this.showBriefToast('远程视频暂不支持自动识别，请手动调整');
+      return;
+    }
+    this.detectingMask = true;
+    this.showBriefToast('正在识别内嵌字幕区域...');
+    try {
+      const res = await BurnSubDetector.detect(this.mediaItem.streamUrl, this.durationMs);
+      if (res) {
+        this.maskYTop = res.yTop;
+        this.maskYBottom = res.yBottom;
+        this.maskEnabled = true;
+        this.maskConfigured = true;
+        this.persistProgressNow();
+        this.showBriefToast('已识别并遮挡内嵌字幕区域');
+      } else {
+        this.showBriefToast('未检测到内嵌字幕，可尝试手动调整');
+      }
+    } catch (_e) {
+      this.showBriefToast('识别失败，请手动调整');
+    } finally {
+      this.detectingMask = false;
+    }
+  }
+
+  private handleKeyEvent(event: KeyEvent): void {
+    if (event.type !== KeyType.Down) return;
+    this.wakeControls();
+    const hasShift = event.getModifierKeyState ? event.getModifierKeyState(['Shift']) : false;
+
+    switch (event.keyCode) {
+      case KeyCode.KEYCODE_SPACE:
+        this.togglePlayPause();
+        break;
+      case KeyCode.KEYCODE_DPAD_LEFT:
+        this.seekTo(this.positionMs - (hasShift ? 30000 : 5000));
+        this.showBriefToast(hasShift ? '快退 30 秒' : '快退 5 秒');
+        break;
+      case KeyCode.KEYCODE_DPAD_RIGHT:
+        this.seekTo(this.positionMs + (hasShift ? 30000 : 5000));
+        this.showBriefToast(hasShift ? '快进 30 秒' : '快进 5 秒');
+        break;
+      case KeyCode.KEYCODE_DPAD_UP:
+        this.applyVolume(this.volume + 0.05);
+        this.showBriefToast(`音量 ${Math.round(this.volume * 100)}%`);
+        break;
+      case KeyCode.KEYCODE_DPAD_DOWN:
+        this.applyVolume(this.volume - 0.05);
+        this.showBriefToast(`音量 ${Math.round(this.volume * 100)}%`);
+        break;
+      case KeyCode.KEYCODE_F:
+        this.toggleFullscreen();
+        break;
+      case KeyCode.KEYCODE_ESCAPE:
+        if (this.maskAdjusting) this.finishMaskAdjust();
+        else if (this.drawerTab !== 'none') this.drawerTab = 'none';
+        else if (this.isFullscreen) this.toggleFullscreen();
+        else this.getUIContext().getRouter().back();
+        break;
+      case KeyCode.KEYCODE_LEFT_BRACKET: {
+        const rates = AppConstants.PLAYBACK_RATES;
+        const idx = rates.indexOf(this.playbackRate);
+        if (idx > 0) this.setRate(rates[idx - 1]);
+        else this.setRate(Math.max(0.5, this.playbackRate - 0.25));
+        break;
+      }
+      case KeyCode.KEYCODE_RIGHT_BRACKET: {
+        const rates = AppConstants.PLAYBACK_RATES;
+        const idx = rates.indexOf(this.playbackRate);
+        if (idx >= 0 && idx < rates.length - 1) this.setRate(rates[idx + 1]);
+        else this.setRate(Math.min(3.0, this.playbackRate + 0.25));
+        break;
+      }
+      case KeyCode.KEYCODE_S:
+        this.drawerTab = this.drawerTab === 'subtitle' ? 'none' : 'subtitle';
+        break;
+      case KeyCode.KEYCODE_A:
+        this.refreshNativeTracks();
+        this.refreshIjkAudioStreams();
+        this.drawerTab = this.drawerTab === 'settings' ? 'none' : 'settings';
+        break;
+      case KeyCode.KEYCODE_I:
+        this.showStatsOsd = !this.showStatsOsd;
+        break;
+      case KeyCode.KEYCODE_M:
+        this.muted = !this.muted;
+        this.applyVolume(this.volume);
+        this.showBriefToast(this.muted ? '已静音' : '已取消静音');
+        break;
+      default:
+        break;
+    }
+  }
+
+  private getSurfaceWidth(): string {
+    if (this.aspectMode === 'fill') return '100%';
+    return '100%';
+  }
+
+  private getSurfaceAspect(): number | undefined {
+    if (this.aspectMode === '16:9') return 16 / 9;
+    if (this.aspectMode === '21:9') return 21 / 9;
+    if (this.aspectMode === '4:3') return 4 / 3;
+    if (this.aspectMode === 'fit' && this.videoWidth > 0 && this.videoHeight > 0) {
+      return this.videoWidth / this.videoHeight;
+    }
+    return undefined;
+  }
+
+  @Builder
+  drawerChip(label: string, active: boolean, onTap: () => void) {
+    Text(label)
+      .layoutWeight(1)
+      .height(36)
+      .fontSize(12)
+      .fontWeight(active ? FontWeight.Bold : FontWeight.Medium)
+      .fontColor(active ? Color.White : '#9CA3AF')
+      .textAlign(TextAlign.Center)
+      .maxLines(1)
+      .padding({ left: 4, right: 4 })
+      .borderRadius(8)
+      .backgroundColor(active ? '#3B82F6' : '#14161D')
+      .border({ width: 0.7, color: active ? '#3B82F6' : '#1FFFFFFF' })
+      .onClick(() => onTap())
+  }
+
+  build() {
+    Stack() {
+      // Video Render Surface (Dual Engine)
+      Column() {
+        if (this.engineMode === 'native_hw') {
+          XComponent({
+            id: 'prism_video_surface',
+            type: XComponentType.SURFACE,
+            libraryname: 'prismplayer'
+          })
+            .width(this.getSurfaceWidth())
+            .aspectRatio(this.getSurfaceAspect())
+            .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
+            .onLoad(() => {
+              this.nativeSurfaceReady = true;
+              this.startNativeEngine();
+            })
+        } else {
+          XComponent({
+            id: 'ijk_video_surface',
+            type: XComponentType.SURFACE,
+            libraryname: 'ijkplayer_napi'
+          })
+            .width(this.getSurfaceWidth())
+            .aspectRatio(this.getSurfaceAspect())
+            .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
+            .onLoad((ctx?: object) => {
+              if (ctx) {
+                this.ijkContext = ctx;
+                this.startIjkEngine();
+              }
+            })
+        }
+      }
+      .width('100%')
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor('#000000')
+
+      // Burned-in Subtitle Occlusion Band (English-learning mask, above the video picture, below all overlays)
+      if (this.maskEnabled) {
+        SubtitleMaskBand({
+          peeking: this.maskPeeking,
+          adjusting: this.maskAdjusting,
+          yTop: this.maskYTop,
+          yBottom: this.maskYBottom,
+          picture: this.maskPictureRect(),
+          onChange: (yTop: number, yBottom: number): void => {
+            this.onMaskDrag(yTop, yBottom);
+          }
+        })
+      }
+
+      // Brightness Dimmer Layer (non-blocking visual dimming across phone / tablet / PC / emulator)
+      if (this.screenBrightness < 0.99) {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#000000')
+          .opacity(Math.max(0, Math.min(0.75, 1 - this.screenBrightness)))
+          .hitTestBehavior(HitTestMode.None)
+      }
+
+      // ASS / SRT / VTT Synchronized Subtitle Overlay
+      if (this.subtitleEnabled) {
+        SubtitleOverlay({
+          cues: this.activeCues,
+          fontSizeFp: this.subtitleFontFp,
+          languageMode: this.languageMode,
+          bgEnabled: this.subtitleBgEnabled,
+          bgOpacityPercent: this.subtitleBgOpacity,
+          verticalOffsetVp: this.subtitleOffsetVp
+        })
+      }
+
+      // Touch & Mouse Gesture Layer (suppressed while adjusting the mask band so band drags win)
+      if (!this.maskAdjusting) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(Color.Transparent)
+        .onTouch((ev: TouchEvent) => {
+          if (ev.type === TouchType.Down && ev.touches.length > 0) {
+            this.lastTouchX = ev.touches[0].x;
+          }
+        })
+        .onMouse(() => {
+          this.wakeControls();
+        })
+        .gesture(
+          GestureGroup(GestureMode.Exclusive,
+            TapGesture({ count: 2 }).onAction(() => {
+              if (this.screenLocked) return;
+              this.togglePlayPause();
+            }),
+            LongPressGesture({ duration: 350, repeat: false })
+              .onAction(() => {
+                if (this.maskEnabled && !this.maskAdjusting && !this.screenLocked) {
+                  this.maskPeeking = true;
+                }
+              })
+              .onActionEnd(() => {
+                this.maskPeeking = false;
+              })
+              .onActionCancel(() => {
+                this.maskPeeking = false;
+              }),
+            TapGesture({ count: 1 }).onAction(() => {
+              if (this.drawerTab !== 'none') {
+                // Drawer button taps pass through the transparent controls layer;
+                // keep controls alive here and let the drawer scrim handle outside taps
+                this.wakeControls();
+                return;
+              }
+              this.showControls = !this.showControls;
+              if (this.showControls) this.scheduleHideControls();
+            }),
+            PanGesture({ direction: PanDirection.Horizontal, distance: 12 })
+              .onActionStart(() => {
+                if (this.screenLocked) return;
+                this.panZone = 'seek';
+                this.gestureStartPosMs = this.positionMs;
+                this.isSeekingSlider = true;
+              })
+              .onActionUpdate((ev: GestureEvent) => {
+                if (this.screenLocked || this.panZone !== 'seek') return;
+                const safeDur = this.durationMs > 0 ? this.durationMs : 600000;
+                const fullSwipeSpanMs = Math.min(180000, Math.max(60000, safeDur * 0.4));
+                const deltaMs = (ev.offsetX / Math.max(240, this.viewportWidthVp)) * fullSwipeSpanMs;
+                const preview = Math.max(0, Math.min(safeDur, this.gestureStartPosMs + deltaMs));
+                const diffSec = Math.round((preview - this.gestureStartPosMs) / 1000);
+                this.positionMs = preview;
+                this.gestureKind = 'seek';
+                this.gestureLabel = `${Formatters.formatDuration(preview)} / ${Formatters.formatDuration(this.durationMs)}`;
+                this.gestureSubLabel = diffSec >= 0 ? `快进 +${diffSec}s` : `快退 ${diffSec}s`;
+                this.gestureRatio = safeDur > 0 ? Math.max(0, Math.min(1, preview / safeDur)) : 0;
+              })
+              .onActionEnd(() => {
+                if (this.panZone === 'seek') {
+                  this.isSeekingSlider = false;
+                  this.seekTo(this.positionMs);
+                }
+                this.panZone = 'none';
+                this.gestureKind = 'none';
+              }),
+            PanGesture({ direction: PanDirection.Vertical, distance: 12 })
+              .onActionStart((ev: GestureEvent) => {
+                if (this.screenLocked) return;
+                const fallbackMid = (this.viewportWidthVp > 0 ? this.viewportWidthVp : 360) * 0.5;
+                let x = fallbackMid;
+                if (this.lastTouchX >= 0) {
+                  x = this.lastTouchX;
+                } else if (ev.fingerList.length > 0) {
+                  x = ev.fingerList[0].localX;
+                }
+                this.panZone = x < fallbackMid ? 'bright' : 'vol';
+                this.gestureStartBright = this.screenBrightness;
+                this.gestureStartVol = this.volume;
+              })
+              .onActionUpdate((ev: GestureEvent) => {
+                if (this.screenLocked) return;
+                const spanY = Math.max(180, this.viewportHeightVp * 0.55);
+                const delta = -ev.offsetY / spanY;
+                if (this.panZone === 'bright') {
+                  this.applyBrightness(this.gestureStartBright + delta);
+                  this.gestureKind = 'bright';
+                  this.gestureLabel = `亮度 ${Math.round(this.screenBrightness * 100)}%`;
+                  this.gestureSubLabel = '左侧上下滑动调节明暗度';
+                  this.gestureRatio = this.screenBrightness;
+                } else if (this.panZone === 'vol') {
+                  this.applyVolume(this.gestureStartVol + delta);
+                  this.gestureKind = 'vol';
+                  this.gestureLabel = `音量 ${Math.round(this.volume * 100)}%`;
+                  this.gestureSubLabel = '右侧上下滑动调节音量';
+                  this.gestureRatio = this.volume;
+                }
+              })
+              .onActionEnd(() => {
+                this.panZone = 'none';
+                this.gestureKind = 'none';
+              })
+          )
+        )
+      }
+
+      // Buffering Spinner
+      if (this.isBuffering) {
+        Column({ space: 8 }) {
+          LoadingProgress().width(42).height(42).color('#3B82F6')
+          Text('正在缓冲高清流...')
+            .fontSize(12)
+            .fontColor(Color.White)
+        }
+        .padding(16)
+        .borderRadius(12)
+        .backgroundColor('#990A0B0F')
+        .hitTestBehavior(HitTestMode.None)
+      }
+
+      // Friendly Playback Error Card
+      if (this.errorBanner) {
+        Column({ space: 14 }) {
+          Row({ space: 10 }) {
+            Column() {
+              SymbolGlyph($r('sys.symbol.exclamationmark_circle_fill'))
+                .fontSize(20)
+                .fontColor(['#F59E0B'])
+            }
+            .width(34)
+            .height(34)
+            .borderRadius(17)
+            .backgroundColor('#24FBBF24')
+            .justifyContent(FlexAlign.Center)
+
+            Text('暂时无法播放此影片')
+              .fontSize(16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#F3F4F6')
+          }.width('100%')
+
+          Text(this.errorBanner)
+            .fontSize(13)
+            .lineHeight(20)
+            .fontColor('#9CA3AF')
+            .width('100%')
+
+          Row({ space: 10 }) {
+            Button(this.engineMode === 'native_hw' ? '切换兼容模式' : '再试一次')
+              .layoutWeight(1)
+              .height(40)
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(Color.White)
+              .backgroundColor('#3B82F6')
+              .borderRadius(10)
+              .onClick(() => {
+                if (this.engineMode === 'native_hw') {
+                  this.switchEngine('ffmpeg_sw');
+                } else {
+                  this.startIjkEngine();
+                }
+              })
+            Button() {
+              Row({ space: 5 }) {
+                SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(15).fontColor([Color.White])
+                Text('返回').fontSize(13).fontColor('#F3F4F6')
+              }
+            }
+            .height(40)
+            .padding({ left: 14, right: 16 })
+            .backgroundColor('#1B1E27')
+            .borderRadius(10)
+            .border({ width: 0.7, color: '#26FFFFFF' })
+            .onClick(() => this.getUIContext().getRouter().back())
+          }.width('100%')
+        }
+        .width('86%')
+        .constraintSize({ maxWidth: 380 })
+        .padding(20)
+        .borderRadius(18)
+        .backgroundColor('#F2141824')
+        .border({ width: 0.9, color: '#33FFFFFF' })
+        .shadow({ radius: 28, color: '#CC000000', offsetX: 0, offsetY: 10 })
+      }
+
+      // Interactive Center Gesture Feedback HUD (Brightness / Volume / Seek)
+      if (this.gestureKind !== 'none') {
+        Column({ space: 8 }) {
+          Row({ space: 8 }) {
+            SymbolGlyph(
+              this.gestureKind === 'bright'
+                ? $r('sys.symbol.sun_max_fill')
+                : (this.gestureKind === 'vol'
+                  ? (this.volume <= 0.01 ? $r('sys.symbol.speaker_slash_fill') : $r('sys.symbol.speaker_wave_2_fill'))
+                  : $r('sys.symbol.forward_end_fill'))
+            )
+              .fontSize(20)
+              .fontColor([this.gestureKind === 'bright' ? '#D97706' : '#3B82F6'])
+
+            Text(this.gestureLabel)
+              .fontSize(15)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(Color.White)
+          }
+
+          Row() {
+            Row()
+              .width(`${Math.round(Math.max(0, Math.min(1, this.gestureRatio)) * 100)}%`)
+              .height(4)
+              .backgroundColor(this.gestureKind === 'bright' ? '#D97706' : '#3B82F6')
+              .borderRadius(2)
+          }
+          .width(176)
+          .height(4)
+          .backgroundColor('#38FFFFFF')
+          .borderRadius(2)
+
+          Text(this.gestureSubLabel)
+            .fontSize(11)
+            .fontColor('#9CA3AF')
+        }
+        .padding({ left: 18, right: 18, top: 12, bottom: 12 })
+        .borderRadius(14)
+        .backgroundColor('#CC0E1119')
+        .border({ width: 0.8, color: '#33FFFFFF' })
+        .hitTestBehavior(HitTestMode.None)
+      }
+
+      // Transient Toast / Gesture Preview
+      if (this.toastText && this.gestureKind === 'none') {
+        Text(this.toastText)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Color.White)
+          .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+          .borderRadius(20)
+          .backgroundColor('#B3000000')
+          .position({ x: '50%', y: '18%' })
+          .translate({ x: '-50%' })
+          .hitTestBehavior(HitTestMode.None)
+      }
+
+      // Technical Stats OSD (Press 'I' on PC or toggle in Settings drawer)
+      if (this.showStatsOsd) {
+        Column({ space: 4 }) {
+          Text(`内核引擎：${this.engineMode === 'native_hw' ? 'OH_AVPlayer 硬件解码' : 'FFmpeg 软解 (@ohos/ijkplayer)'}`)
+            .fontSize(11).fontColor('#94A3B8')
+          if (this.decodeRouteReason) {
+            Text(`路由决策：${this.decodeRouteReason}`)
+              .fontSize(10).fontColor('#D97706').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          Text(`分辨率：${this.videoWidth} × ${this.videoHeight} · 倍速：${this.playbackRate}x`)
+            .fontSize(11).fontColor(Color.White)
+          Text(`C++ Range Proxy：127.0.0.1:${this.store.proxyPort} · 已吞吐 ${this.proxyBytesText}`)
+            .fontSize(11).fontColor(Color.White)
+          Text(`块缓存命中率：${this.proxyHitRate}`)
+            .fontSize(11).fontColor('#10B981')
+          if (this.proxyResolvedUrl) {
+            Text(`直链：${this.proxyResolvedUrl}`)
+              .fontSize(10).fontColor('#6B7280').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+        }
+        .width(340)
+        .padding(12)
+        .borderRadius(12)
+        .backgroundColor('#E60A0B0F')
+        .border({ width: 0.8, color: '#26FFFFFF' })
+        .alignItems(HorizontalAlign.Start)
+        .position({ left: 18, top: 108 })
+      }
+
+      // Player Controls Overlay
+      if (this.showControls) {
+        Column() {
+          // Top Bar
+          Row({ space: 10 }) {
+            if (!this.screenLocked) {
+              Button({ type: ButtonType.Circle }) {
+                SymbolGlyph($r('sys.symbol.chevron_left'))
+                  .fontSize(20)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor([Color.White])
+              }
+              .width(38)
+              .height(38)
+              .backgroundColor('#80141720')
+              .border({ width: 0.6, color: '#33FFFFFF' })
+              .onClick(() => this.getUIContext().getRouter().back())
+
+              Column({ space: 2 }) {
+                Text(this.mediaItem ? this.mediaItem.title : '正在播放')
+                  .fontSize(15)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(Color.White)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                if (this.mediaItem && this.mediaItem.qualityTag) {
+                  Text(`${this.mediaItem.qualityTag} · ${this.engineMode === 'native_hw' ? '硬解' : 'FFmpeg'}`)
+                    .fontSize(11)
+                    .fontColor('#94A3B8')
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                }
+              }
+              .layoutWeight(1)
+              .alignItems(HorizontalAlign.Start)
+
+              Button({ type: ButtonType.Circle }) {
+                SymbolGlyph(this.isFavorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart'))
+                  .fontSize(15)
+                  .fontColor([this.isFavorite ? '#EF4444' : Color.White])
+              }
+              .width(36)
+              .height(36)
+              .backgroundColor('#80141720')
+              .border({ width: 0.6, color: this.isFavorite ? '#66EF4444' : '#33FFFFFF' })
+              .onClick(async () => {
+                if (this.mediaItem) {
+                  this.isFavorite = await this.store.toggleFavorite(this.mediaItem.id);
+                  this.showBriefToast(this.isFavorite ? '已加入收藏' : '已取消收藏');
+                }
+              })
+
+              Button({ type: ButtonType.Circle }) {
+                SymbolGlyph(this.screenLocked ? $r('sys.symbol.lock_fill') : $r('sys.symbol.lock_open_fill'))
+                  .fontSize(15)
+                  .fontColor([this.screenLocked ? '#D97706' : Color.White])
+              }
+              .width(36)
+              .height(36)
+              .backgroundColor('#80141720')
+              .border({ width: 0.6, color: '#33FFFFFF' })
+              .onClick(() => {
+                this.screenLocked = !this.screenLocked;
+                this.showBriefToast(this.screenLocked ? '已锁定触摸手势' : '已解锁');
+              })
+
+              Button({ type: ButtonType.Circle }) {
+                SymbolGlyph($r('sys.symbol.ellipsis_circle'))
+                  .fontSize(17)
+                  .fontColor([Color.White])
+              }
+              .width(36)
+              .height(36)
+              .backgroundColor('#80141720')
+              .border({ width: 0.6, color: '#33FFFFFF' })
+              .bindMenu([
+                {
+                  value: this.videoSavedLocal ? '已保存至离线影库（点击重存）' : '保存视频至本地离线影库',
+                  action: () => { this.saveCurrentVideoOffline(false); }
+                },
+                {
+                  value: '另存视频文件到手机 / 电脑目录',
+                  action: () => { this.saveCurrentVideoOffline(true); }
+                },
+                {
+                  value: this.engineMode === 'native_hw' ? '切换至 FFmpeg 兼容解码' : '切换至系统硬解内核',
+                  action: () => { this.switchEngine(this.engineMode === 'native_hw' ? 'ffmpeg_sw' : 'native_hw'); }
+                },
+                {
+                  value: this.showStatsOsd ? '隐藏技术参数面板' : '显示技术参数面板',
+                  action: () => { this.showStatsOsd = !this.showStatsOsd; }
+                },
+                {
+                  value: this.isFullscreen ? '退出全屏影院模式' : '切换全屏影院模式',
+                  action: () => { this.toggleFullscreen(); }
+                }
+              ])
+            } else {
+              Blank()
+              Button({ type: ButtonType.Circle }) {
+                SymbolGlyph($r('sys.symbol.lock_fill'))
+                  .fontSize(15)
+                  .fontColor(['#D97706'])
+              }
+              .width(36)
+              .height(36)
+              .backgroundColor('#80141720')
+              .border({ width: 0.6, color: '#33FFFFFF' })
+              .onClick(() => {
+                this.screenLocked = false;
+                this.showBriefToast('已解锁');
+              })
+            }
+          }
+          .width('100%')
+          .padding({ left: 18, right: 18, top: 16, bottom: 16 })
+          .linearGradient({ angle: 180, colors: [['#CC000000', 0], ['#00000000', 1]] })
+
+          Blank()
+
+          // Bottom Floating Frosted Control Capsule
+          if (!this.screenLocked) {
+            Column({ space: 10 }) {
+              Row({ space: 10 }) {
+                Text(Formatters.formatDuration(this.positionMs))
+                  .fontSize(12)
+                  .fontColor(Color.White)
+                  .width(54)
+
+                Slider({
+                  value: this.positionMs,
+                  min: 0,
+                  max: this.durationMs > 0 ? this.durationMs : 1000,
+                  step: 500
+                })
+                  .layoutWeight(1)
+                  .selectedColor('#3B82F6')
+                  .trackColor('#4DFFFFFF')
+                  .blockColor(Color.White)
+                  .onChange((val: number, mode: SliderChangeMode) => {
+                    if (mode === SliderChangeMode.Begin || mode === SliderChangeMode.Moving) {
+                      this.isSeekingSlider = true;
+                      this.positionMs = val;
+                      this.wakeControls();
+                    } else if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+                      this.isSeekingSlider = false;
+                      this.seekTo(val);
+                    }
+                  })
+
+                Text(Formatters.formatDuration(this.durationMs))
+                  .fontSize(12)
+                  .fontColor('#9CA3AF')
+                  .width(54)
+                  .textAlign(TextAlign.End)
+              }
+              .width('100%')
+
+              Row({ space: 10 }) {
+                Button({ type: ButtonType.Circle }) {
+                  SymbolGlyph($r('sys.symbol.gobackward_15'))
+                    .fontSize(16)
+                    .fontColor([Color.White])
+                }
+                .width(38)
+                .height(38)
+                .backgroundColor('#66191D2A')
+                .onClick(() => this.seekTo(this.positionMs - 15000))
+
+                Button({ type: ButtonType.Circle }) {
+                  SymbolGlyph(this.isPlaying ? $r('sys.symbol.pause') : $r('sys.symbol.play_fill'))
+                    .fontSize(18)
+                    .fontColor([Color.White])
+                }
+                .width(44)
+                .height(44)
+                .backgroundColor('#3B82F6')
+                .shadow({ radius: 10, color: '#665E8BFF', offsetX: 0, offsetY: 2 })
+                .onClick(() => this.togglePlayPause())
+
+                Button({ type: ButtonType.Circle }) {
+                  SymbolGlyph($r('sys.symbol.goforward_15'))
+                    .fontSize(16)
+                    .fontColor([Color.White])
+                }
+                .width(38)
+                .height(38)
+                .backgroundColor('#66191D2A')
+                .onClick(() => this.seekTo(this.positionMs + 15000))
+
+                Blank()
+
+                Button({ type: ButtonType.Circle }) {
+                  SymbolGlyph($r('sys.symbol.textformat_size_square_fill'))
+                    .fontSize(17)
+                    .fontColor([this.drawerTab === 'subtitle' ? '#3B82F6' : Color.White])
+                }
+                .width(38)
+                .height(38)
+                .backgroundColor('#66191D2A')
+                .onClick(() => {
+                  this.drawerTab = this.drawerTab === 'subtitle' ? 'none' : 'subtitle';
+                })
+
+                Button({ type: ButtonType.Circle }) {
+                  SymbolGlyph($r('sys.symbol.slider_horizontal_2'))
+                    .fontSize(17)
+                    .fontColor([this.drawerTab === 'settings' ? '#3B82F6' : Color.White])
+                }
+                .width(38)
+                .height(38)
+                .backgroundColor('#66191D2A')
+                .onClick(() => {
+                  this.refreshNativeTracks();
+                  this.refreshIjkAudioStreams();
+                  this.drawerTab = this.drawerTab === 'settings' ? 'none' : 'settings';
+                })
+
+                Button({ type: ButtonType.Circle }) {
+                  SymbolGlyph(
+                    this.isFullscreen
+                      ? $r('sys.symbol.arrow_down_right_and_arrow_up_left')
+                      : $r('sys.symbol.arrow_up_left_and_arrow_down_right')
+                  )
+                    .fontSize(16)
+                    .fontColor([this.isFullscreen ? '#94A3B8' : Color.White])
+                }
+                .width(38)
+                .height(38)
+                .backgroundColor('#66191D2A')
+                .onClick(() => this.toggleFullscreen())
+              }
+              .width('100%')
+            }
+            .width(this.viewportWidthVp > 760 ? 720 : '94%')
+            .padding(this.viewportHeightVp < 500 ? 10 : 14)
+            .margin({
+              bottom: this.viewportHeightVp < 500 ? 10 : 18
+            })
+            .borderRadius(18)
+            .backgroundColor('#CC10131C')
+            .backdropBlur(20)
+            .border({ width: 0.8, color: '#26FFFFFF' })
+          }
+        }
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
+
+      // Floating done chip while adjusting the burned-subtitle mask band
+      if (this.maskAdjusting) {
+        Row({ space: 12 }) {
+          Text('拖动黑条上下边缘调整遮挡范围')
+            .fontSize(13)
+            .fontColor(Color.White)
+          Button('完成')
+            .height(32)
+            .padding({ left: 18, right: 18 })
+            .fontSize(13)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(Color.White)
+            .backgroundColor('#3B82F6')
+            .borderRadius(16)
+            .onClick(() => this.finishMaskAdjust())
+        }
+        .padding({ left: 16, right: 8, top: 7, bottom: 7 })
+        .borderRadius(24)
+        .backgroundColor('#B3000000')
+        .border({ width: 0.8, color: '#33FFFFFF' })
+        .position({ x: '50%', y: '9%' })
+        .translate({ x: '-50%' })
+      }
+
+      // Side Drawer with Scrim Backdrop (Subtitle / Audio / Aspect Settings)
+      if (this.drawerTab !== 'none') {
+        Stack({ alignContent: Alignment.TopEnd }) {
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor('#9905060A')
+            .onClick(() => { this.drawerTab = 'none'; })
+
+          Column({ space: 12 }) {
+            Row({ space: 10 }) {
+              Text(this.drawerTab === 'subtitle' ? '字幕设置' : '播放设置')
+                .fontSize(17)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(Color.White)
+              Blank()
+              Button({ type: ButtonType.Circle }) {
+                SymbolGlyph($r('sys.symbol.xmark'))
+                  .fontSize(13)
+                  .fontColor(['#9CA3AF'])
+              }
+              .width(30)
+              .height(30)
+              .backgroundColor('#1B1E27')
+              .onClick(() => { this.drawerTab = 'none'; })
+            }.width('100%')
+
+            Scroll() {
+              Column({ space: 16 }) {
+
+            if (this.drawerTab === 'subtitle') {
+              Row() {
+                Text('显示字幕').fontSize(14).fontColor(Color.White)
+                Blank()
+                Toggle({ type: ToggleType.Switch, isOn: this.subtitleEnabled })
+                  .selectedColor('#3B82F6')
+                  .onChange((v: boolean) => { this.subtitleEnabled = v; })
+              }.width('100%')
+
+              if (this.externalTracks.some(t => t.langTag === 'zh-en')) {
+                Column({ space: 8 }) {
+                  Text('双语字幕行过滤').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#9CA3AF')
+                  Row({ space: 6 }) {
+                    ForEach(['all', 'zh', 'en'] as SubtitleLanguageMode[], (m: SubtitleLanguageMode) => {
+                      this.drawerChip(
+                        m === 'all' ? '全部' : (m === 'zh' ? '只中文' : '只英文'),
+                        this.languageMode === m,
+                        () => {
+                          this.languageMode = m;
+                          this.persistSubtitlePrefs();
+                        }
+                      )
+                    }, (m: SubtitleLanguageMode) => `${m}_${this.languageMode === m}`)
+                  }.width('100%')
+                }.width('100%').alignItems(HorizontalAlign.Start)
+              }
+
+              Column({ space: 8 }) {
+                Text(`外挂字幕轨道（${this.externalTracks.length}）`)
+                  .fontSize(13)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor('#9CA3AF')
+                if (this.externalTracks.length === 0) {
+                  Text('未挂载外挂字幕').fontSize(12).fontColor('#6B7280')
+                }
+                ForEach(this.externalTracks, (trk: ExternalSubtitleTrack) => {
+                  Row({ space: 8 }) {
+                    Row({ space: 8 }) {
+                      SymbolGlyph(this.enabledTrackIds.indexOf(trk.id) >= 0
+                        ? $r('sys.symbol.checkmark_circle_fill')
+                        : $r('sys.symbol.circle'))
+                        .fontSize(18)
+                        .fontColor([this.enabledTrackIds.indexOf(trk.id) >= 0 ? '#3B82F6' : '#6B7280'])
+                      Column({ space: 2 }) {
+                        Text(trk.label)
+                          .fontSize(13)
+                          .fontColor(Color.White)
+                          .maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        Text(`${trk.format.toUpperCase()} · ${trk.cues.length} 条`)
+                          .fontSize(10)
+                          .fontColor('#6B7280')
+                      }
+                      .alignItems(HorizontalAlign.Start)
+                      .layoutWeight(1)
+                      Text(this.langBadge(trk.langTag))
+                        .fontSize(9)
+                        .fontColor('#94A3B8')
+                        .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+                        .borderRadius(4)
+                        .backgroundColor('#1A38BDF8')
+                    }
+                    .alignItems(VerticalAlign.Center)
+                    .layoutWeight(1)
+                    .onClick(() => this.toggleTrackEnabled(trk.id))
+
+                    SymbolGlyph($r('sys.symbol.xmark'))
+                      .fontSize(13)
+                      .fontColor(['#6B7280'])
+                      .padding(6)
+                      .onClick(() => this.removeExternalTrack(trk.id))
+                  }
+                  .width('100%')
+                  .padding({ left: 10, right: 6, top: 8, bottom: 8 })
+                  .borderRadius(10)
+                  .backgroundColor('#14161D')
+                  .alignItems(VerticalAlign.Center)
+                }, (trk: ExternalSubtitleTrack) => `${trk.id}_${this.enabledTrackIds.indexOf(trk.id) >= 0 ? 1 : 0}`)
+                if (this.externalTracks.length > 0) {
+                  Text(this.enabledTrackIds.length > 0
+                    ? `已启用 ${this.enabledTrackIds.length} 条轨道，可多选同屏`
+                    : '全部轨道已停用，勾选行以启用')
+                    .fontSize(10)
+                    .fontColor(this.enabledTrackIds.length > 0 ? '#10B981' : '#6B7280')
+                }
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              Button('导入本地 .ass / .srt / .vtt 字幕（可多选）')
+                .width('100%')
+                .height(40)
+                .fontSize(13)
+                .fontColor(Color.White)
+                .backgroundColor('#3B82F6')
+                .borderRadius(10)
+                .onClick(() => this.importLocalSubtitle())
+
+              // Online Subtitle Matching (SubDL + 字幕库，季集感知评分)
+              Column({ space: 8 }) {
+                Text('在线字幕匹配（SubDL · 字幕库）').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#9CA3AF')
+
+                Button() {
+                  Row({ space: 6 }) {
+                    if (this.autoMatching) {
+                      LoadingProgress().width(14).height(14).color(Color.White)
+                    } else {
+                      SymbolGlyph($r('sys.symbol.wand_and_stars_fill'))
+                        .fontSize(14)
+                        .fontColor([Color.White])
+                    }
+                    Text(this.autoMatching ? '正在匹配...' : '自动匹配最佳字幕')
+                      .fontSize(13)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor(Color.White)
+                  }
+                }
+                .width('100%')
+                .height(40)
+                .backgroundColor('#3B82F6')
+                .borderRadius(10)
+                .enabled(!this.autoMatching)
+                .onClick(() => this.autoMatchSubtitle())
+
+                Row({ space: 6 }) {
+                  TextInput({ text: this.subSearchQuery, placeholder: '输入片名 / 英文名' })
+                    .layoutWeight(1)
+                    .height(36)
+                    .fontSize(12)
+                    .fontColor(Color.White)
+                    .backgroundColor('#14161D')
+                    .borderRadius(8)
+                    .onChange((v: string) => { this.subSearchQuery = v; })
+                  Button(this.subSearching ? '搜索中' : '搜索')
+                    .height(36)
+                    .padding({ left: 12, right: 12 })
+                    .fontSize(12)
+                    .fontColor(Color.White)
+                    .backgroundColor('#3B82F6')
+                    .borderRadius(8)
+                    .enabled(!this.subSearching)
+                    .onClick(() => { this.runOnlineSubtitleSearch(); })
+                }.width('100%')
+
+                if (this.subSearchResults.length > 0) {
+                  Column({ space: 6 }) {
+                    ForEach(this.subSearchResults.slice(0, 8), (res: OnlineSubtitleResult) => {
+                      Row({ space: 8 }) {
+                        Text(res.langLabel)
+                          .fontSize(10)
+                          .fontColor('#3B82F6')
+                          .padding({ left: 5, right: 5, top: 2, bottom: 2 })
+                          .borderRadius(4)
+                          .backgroundColor('#1E3B82F6')
+                        Text(res.title)
+                          .fontSize(11)
+                          .fontColor(Color.White)
+                          .maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                          .layoutWeight(1)
+                        Text(res.sourceName)
+                          .fontSize(10)
+                          .fontColor('#9CA3AF')
+                        Text(res.format)
+                          .fontSize(10)
+                          .fontColor('#6B7280')
+                      }
+                      .width('100%')
+                      .padding({ left: 8, right: 8, top: 7, bottom: 7 })
+                      .borderRadius(8)
+                      .backgroundColor('#14161D')
+                      .onClick(() => { this.mountOnlineSubtitle(res); })
+                    }, (res: OnlineSubtitleResult) => res.id)
+                  }.width('100%')
+                }
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              // Subtitle Translation & HarmonyOS CoreSpeechKit TTS
+              Column({ space: 8 }) {
+                Row() {
+                  Column({ space: 1 }) {
+                    Text('外文字幕翻译为中文').fontSize(13).fontColor(Color.White)
+                    Text('英 / 法 / 日 / 韩等外挂字幕双语对照').fontSize(10).fontColor('#6B7280')
+                  }.alignItems(HorizontalAlign.Start)
+                  Blank()
+                  Toggle({ type: ToggleType.Switch, isOn: this.subtitleTranslateEnabled })
+                    .selectedColor('#3B82F6')
+                    .onChange((v: boolean) => { this.subtitleTranslateEnabled = v; })
+                }.width('100%')
+
+                Row() {
+                  Column({ space: 1 }) {
+                    Text('AI 语音朗读字幕 (TTS)').fontSize(13).fontColor(Color.White)
+                    Text('端侧语音合成同声朗读，适合教程与纪录片').fontSize(10).fontColor('#6B7280')
+                  }.alignItems(HorizontalAlign.Start)
+                  Blank()
+                  Toggle({ type: ToggleType.Switch, isOn: this.subtitleTtsEnabled })
+                    .selectedColor('#3B82F6')
+                    .onChange((v: boolean) => {
+                      this.subtitleTtsEnabled = v;
+                      if (!v) SubtitleService.stopSpeaking();
+                    })
+                }.width('100%')
+              }.width('100%')
+
+              Column({ space: 8 }) {
+                Text(`字幕时间微调：${(this.subtitleDelayMs / 1000).toFixed(1)}s`)
+                  .fontSize(12).fontColor('#9CA3AF')
+                Row({ space: 6 }) {
+                  this.drawerChip('-0.5s', false, () => { this.subtitleDelayMs -= 500; })
+                  this.drawerChip('-0.1s', false, () => { this.subtitleDelayMs -= 100; })
+                  this.drawerChip('归零', this.subtitleDelayMs === 0, () => { this.subtitleDelayMs = 0; })
+                  this.drawerChip('+0.1s', false, () => { this.subtitleDelayMs += 100; })
+                  this.drawerChip('+0.5s', false, () => { this.subtitleDelayMs += 500; })
+                }.width('100%')
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              Column({ space: 6 }) {
+                Text(`字号：${this.subtitleFontFp} fp`).fontSize(12).fontColor('#9CA3AF')
+                Slider({ value: this.subtitleFontFp, min: 14, max: 32, step: 2 })
+                  .width('100%')
+                  .selectedColor('#3B82F6')
+                  .onChange((v: number, mode: SliderChangeMode) => {
+                    this.subtitleFontFp = Math.round(v);
+                    if (mode === SliderChangeMode.End) {
+                      this.persistSubtitlePrefs();
+                      this.showBriefToast(`已保存为默认字号 ${this.subtitleFontFp} fp`);
+                    }
+                  })
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              Column({ space: 8 }) {
+                Row() {
+                  Text('字幕背景').fontSize(14).fontColor(Color.White)
+                  Blank()
+                  Toggle({ type: ToggleType.Switch, isOn: this.subtitleBgEnabled })
+                    .selectedColor('#3B82F6')
+                    .onChange((v: boolean) => {
+                      this.subtitleBgEnabled = v;
+                      this.persistSubtitlePrefs();
+                    })
+                }.width('100%')
+
+                Text(`背景不透明度：${this.subtitleBgOpacity}%`).fontSize(12).fontColor('#9CA3AF')
+                Slider({ value: this.subtitleBgOpacity, min: 0, max: 100, step: 5 })
+                  .width('100%')
+                  .selectedColor('#3B82F6')
+                  .onChange((v: number, mode: SliderChangeMode) => {
+                    this.subtitleBgOpacity = Math.round(v);
+                    if (mode === SliderChangeMode.End) {
+                      this.persistSubtitlePrefs();
+                    }
+                  })
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              Column({ space: 6 }) {
+                Text(this.subtitleOffsetVp === 0 ? '字幕位置：默认底部' : `字幕位置：上移 ${this.subtitleOffsetVp}vp`)
+                  .fontSize(12).fontColor('#9CA3AF')
+                Slider({ value: this.subtitleOffsetVp, min: 0, max: 160, step: 8 })
+                  .width('100%')
+                  .selectedColor('#3B82F6')
+                  .onChange((v: number, mode: SliderChangeMode) => {
+                    this.subtitleOffsetVp = Math.round(v);
+                    if (mode === SliderChangeMode.End) {
+                      this.persistSubtitlePrefs();
+                    }
+                  })
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              Divider().color('#18FFFFFF')
+
+              Column({ space: 8 }) {
+                Row() {
+                  Text('遮挡内嵌字幕').fontSize(14).fontColor(Color.White)
+                  Blank()
+                  Toggle({ type: ToggleType.Switch, isOn: this.maskEnabled })
+                    .selectedColor('#3B82F6')
+                    .onChange((v: boolean) => { this.setMaskEnabledNow(v); })
+                }.width('100%')
+
+                Text('英语学习模式：黑条盖住画面内烧录的硬字幕，长按画面可临时露出')
+                  .fontSize(10)
+                  .fontColor('#6B7280')
+
+                Row({ space: 6 }) {
+                  Button(this.detectingMask ? '识别中...' : '自动识别')
+                    .layoutWeight(1)
+                    .height(36)
+                    .fontSize(12)
+                    .fontColor(this.isLocalPlayback() && !this.detectingMask ? Color.White : '#6B7280')
+                    .backgroundColor(this.isLocalPlayback() ? '#3B82F6' : '#14161D')
+                    .borderRadius(8)
+                    .enabled(this.isLocalPlayback() && !this.detectingMask)
+                    .onClick(() => this.runBurnSubDetect())
+                  Button('手动调整')
+                    .layoutWeight(1)
+                    .height(36)
+                    .fontSize(12)
+                    .fontColor(Color.White)
+                    .backgroundColor('#14161D')
+                    .border({ width: 0.7, color: '#1FFFFFFF' })
+                    .borderRadius(8)
+                    .onClick(() => this.startMaskAdjust())
+                }.width('100%')
+
+                if (!this.isLocalPlayback()) {
+                  Text('远程流媒体视频暂不支持自动识别，请手动调整遮挡范围')
+                    .fontSize(10)
+                    .fontColor('#6B7280')
+                }
+              }.width('100%').alignItems(HorizontalAlign.Start)
+            } else {
+              Column({ space: 8 }) {
+                Text('画面比例').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#9CA3AF')
+                Row({ space: 6 }) {
+                  ForEach(['fit', 'fill', '16:9', '21:9', '4:3'] as AspectMode[], (m: AspectMode) => {
+                    this.drawerChip(
+                      m === 'fit' ? '适应' : (m === 'fill' ? '铺满' : m),
+                      this.aspectMode === m,
+                      () => { this.aspectMode = m; }
+                    )
+                  }, (m: AspectMode) => `${m}_${this.aspectMode === m}`)
+                }.width('100%')
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              Column({ space: 8 }) {
+                Text('播放倍速').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#9CA3AF')
+                Row({ space: 6 }) {
+                  ForEach([0.75, 1.0, 1.25, 1.5, 2.0], (r: number) => {
+                    this.drawerChip(
+                      `${r}x`,
+                      this.playbackRate === r,
+                      () => this.setRate(r)
+                    )
+                  }, (r: number) => `${r}_${this.playbackRate === r}`)
+                }.width('100%')
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              Column({ space: 8 }) {
+                Text('音轨选择').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#9CA3AF')
+                if (this.engineMode === 'native_hw') {
+                  if (this.tracks.filter(t => t.kind === 'audio').length === 0) {
+                    Text('当前视频没有检测到多音轨，使用默认音轨')
+                      .fontSize(12)
+                      .fontColor('#6B7280')
+                  } else {
+                    ForEach(this.tracks.filter(t => t.kind === 'audio'), (trk: PlayerTrackItem) => {
+                      Row() {
+                        Column({ space: 2 }) {
+                          Text(trk.label).fontSize(13).fontColor(Color.White)
+                          if (trk.details || trk.codec) {
+                            Text(`${trk.codec} ${trk.details}`).fontSize(11).fontColor('#6B7280')
+                          }
+                        }.alignItems(HorizontalAlign.Start)
+                        Blank()
+                        if (this.selectedAudioTrack === trk.index) {
+                          SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
+                            .fontSize(16)
+                            .fontColor(['#3B82F6'])
+                        }
+                      }
+                      .width('100%')
+                      .padding(12)
+                      .borderRadius(10)
+                      .backgroundColor('#14161D')
+                      .onClick(() => {
+                        if (this.nativePlayerId > 0) {
+                          prismNative.selectPlayerTrack(this.nativePlayerId, trk.index);
+                          this.selectedAudioTrack = trk.index;
+                          this.showBriefToast(`已切换音轨：${trk.label}`);
+                        }
+                      })
+                    }, (trk: PlayerTrackItem) => `${trk.index}_${this.selectedAudioTrack === trk.index}`)
+                  }
+                } else if (this.ijkAudioStreams.length === 0) {
+                  Text('当前视频使用默认音轨（FFmpeg 模式自动直出）')
+                    .fontSize(12)
+                    .fontColor('#6B7280')
+                } else {
+                  ForEach(this.ijkAudioStreams, (st: IjkAudioStream) => {
+                    Row() {
+                      Column({ space: 2 }) {
+                        Text(st.label).fontSize(13).fontColor(Color.White)
+                        Text(`流序号 ${st.streamIndex} · ${st.codec}`)
+                          .fontSize(11)
+                          .fontColor('#6B7280')
+                      }.alignItems(HorizontalAlign.Start)
+                      Blank()
+                      if (this.selectedIjkAudioStream === st.streamIndex) {
+                        SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
+                          .fontSize(16)
+                          .fontColor(['#3B82F6'])
+                      }
+                    }
+                    .width('100%')
+                    .padding(12)
+                    .borderRadius(10)
+                    .backgroundColor('#14161D')
+                    .onClick(() => this.selectIjkAudioStream(st.streamIndex))
+                  }, (st: IjkAudioStream) => `ijk_${st.streamIndex}_${this.selectedIjkAudioStream === st.streamIndex}`)
+                }
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              if (this.engineMode === 'native_hw') {
+                Column({ space: 8 }) {
+                  Text('内嵌字幕轨').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#9CA3AF')
+                  if (this.tracks.filter(t => t.kind === 'subtitle').length === 0) {
+                    Text('当前视频没有内嵌字幕轨，可在字幕页导入外挂字幕')
+                      .fontSize(12)
+                      .fontColor('#6B7280')
+                  } else {
+                    Row({ space: 6 }) {
+                      this.drawerChip('关闭内嵌字幕', this.selectedNativeSubtitleTrack < 0, () => this.deselectNativeSubtitleTrack())
+                    }.width('100%')
+
+                    ForEach(this.tracks.filter(t => t.kind === 'subtitle'), (trk: PlayerTrackItem) => {
+                      Row() {
+                        Column({ space: 2 }) {
+                          Text(trk.label).fontSize(13).fontColor(Color.White)
+                          if (trk.codec) {
+                            Text(trk.codec).fontSize(11).fontColor('#6B7280')
+                          }
+                        }.alignItems(HorizontalAlign.Start)
+                        Blank()
+                        if (this.selectedNativeSubtitleTrack === trk.index) {
+                          SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
+                            .fontSize(16)
+                            .fontColor(['#3B82F6'])
+                        }
+                      }
+                      .width('100%')
+                      .padding(12)
+                      .borderRadius(10)
+                      .backgroundColor('#14161D')
+                      .onClick(() => this.selectNativeSubtitleTrack(trk.index))
+                    }, (trk: PlayerTrackItem) => `sub_${trk.index}_${this.selectedNativeSubtitleTrack === trk.index}`)
+
+                    Text('内嵌字幕与外挂字幕可同时显示，如重叠请二选一')
+                      .fontSize(10)
+                      .fontColor('#6B7280')
+                  }
+                }.width('100%').alignItems(HorizontalAlign.Start)
+              }
+            }
+              }
+              .width('100%')
+            }
+            .layoutWeight(1)
+            .width('100%')
+            .align(Alignment.TopStart)
+            .scrollBar(BarState.Off)
+          }
+          .width('86%')
+          .constraintSize({ maxWidth: 360 })
+          .height('100%')
+          .padding({ left: 18, right: 18, top: 20, bottom: 24 })
+          .alignItems(HorizontalAlign.Start)
+          .backgroundColor('#FF12151E')
+          .border({ width: { left: 1 }, color: '#1FFFFFFF' })
+        }
+        .width('100%')
+        .height('100%')
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor('#000000')
+    .focusable(true)
+    .defaultFocus(true)
+    .onAreaChange((_oldVal: Area, newVal: Area) => {
+      const w = Number(newVal.width);
+      const h = Number(newVal.height);
+      if (w > 0) this.viewportWidthVp = w;
+      if (h > 0) this.viewportHeightVp = h;
+    })
+    .onKeyEvent((ev: KeyEvent) => this.handleKeyEvent(ev))
+  }
+}

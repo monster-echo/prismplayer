@@ -1,0 +1,21 @@
+{
+  "src": [
+    "pages/Index",
+    "pages/PlayerPage",
+    "pages/MediaDetailPage",
+    "pages/SearchPage",
+    "pages/SourceBrowserPage",
+    "pages/SourceFormPage",
+    "pages/ProStorePage",
+    "pages/PlaybackPrefsPage",
+    "pages/DecoderPrefsPage",
+    "pages/CachePrefsPage",
+    "pages/SubtitlePrefsPage",
+    "pages/ShortcutsPage",
+    "pages/TmdbConfigPage",
+    "pages/AboutPrivacyPage",
+    "pages/PrivacyVaultPage",
+    "pages/LegalDocPage",
+    "pages/OnlineMediaPage"
+  ]
+}

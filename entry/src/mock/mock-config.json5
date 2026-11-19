@@ -1,0 +1,5 @@
+{
+  "libprismplayer.so": {
+    "source": "src/mock/Libprismplayer.mock.ets"
+  }
+}

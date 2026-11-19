@@ -1,0 +1,30 @@
+# Build outputs
+build/
+entry/build/
+entry/.cxx/
+**/.cxx/
+*.hap
+*.app
+
+# Dependencies
+oh_modules/
+node_modules/
+
+# Hvigor cache / logs
+.hvigor/
+
+# Signing materials — never commit
+*.p7b
+*.p12
+*.cer
+*.csr
+*.keystore
+*.jks
+
+# Local machine config
+local.properties
+.local/
+
+# IDE / OS
+.idea/
+.DS_Store

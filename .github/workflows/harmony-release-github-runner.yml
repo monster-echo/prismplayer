@@ -1,0 +1,322 @@
+# 与 harmony-release.yml 并行的 GitHub 托管 runner 版本,先用于验证,稳定后可切换/替换。
+# 与 self-hosted 版的差异:
+#   1. runs-on: macos-15(Apple Silicon,工具链是 arm64 Mach-O,Intel runner 跑不了)
+#   2. 工具链来自公共镜像仓库 monster-echo/harmonyos-cli 的 release
+#      (用 scripts/pack-toolchain.sh 生成上传,多项目共用,public 仓库无需 PAT),
+#      并用 actions/cache 缓存解压结果,改工具链时递增 TOOLCHAIN_VERSION
+#   3. publish job 移到 ubuntu-latest(纯 curl/jq,1x 计费比 macOS 10x 便宜)
+
+name: HarmonyOS Release (GitHub runner)
+
+on:
+  push:
+    tags: ['harmony-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.0.0)'
+        required: false
+        default: '0.0.0'
+      skip_publish:
+        description: 'Skip AppGallery publish (build only)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  TOOLCHAIN_MIRROR_REPO: monster-echo/harmonyos-cli
+  # 必须与 scripts/pack-toolchain.sh 里的 TOOLCHAIN_VERSION 一致
+  TOOLCHAIN_VERSION: '26.0.0.105-1'
+
+jobs:
+  build-harmony:
+    name: Build HarmonyOS App (macos-15)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Setup JDK 17 (hap-sign-tool)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore toolchain cache
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/harmony-cli
+          key: harmony-cli-${{ env.TOOLCHAIN_VERSION }}
+
+      - name: Download & unpack toolchain
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tc"
+          gh release download "toolchain-${TOOLCHAIN_VERSION}" \
+            --repo "$TOOLCHAIN_MIRROR_REPO" \
+            --pattern 'harmony-cli-mac-*.tar.gz.part-*' \
+            --dir "$RUNNER_TEMP/tc"
+          cat "$RUNNER_TEMP"/tc/harmony-cli-mac-*.tar.gz.part-* > "$RUNNER_TEMP/tc/toolchain.tar.gz"
+          tar -xzf "$RUNNER_TEMP/tc/toolchain.tar.gz" -C "$HOME"
+          test -f "$HOME/harmony-cli/toolchain-version" || { echo "::error::toolchain unpack failed"; exit 1; }
+          test -d "$HOME/harmony-cli/sdk/default/openharmony/native/llvm" || { echo "::error::native llvm missing"; exit 1; }
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == harmony-v* ]]; then
+            VERSION="${GITHUB_REF_NAME#harmony-v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          VERSION="${VERSION%%-*}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          # 1.0.0 -> 1000000+n，始终高于手工上传过的 versionCode 1000000
+          BASE=$(( MAJOR * 1000000 + MINOR * 10000 + PATCH * 100 ))
+          VERSION_CODE=$(( BASE + GITHUB_RUN_NUMBER ))
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Update version in app.json5
+        run: |
+          sed -i '' \
+            -e "s/\"versionCode\": [0-9]*/\"versionCode\": ${{ steps.version.outputs.version_code }}/" \
+            -e "s/\"versionName\": \"[^\"]*\"/\"versionName\": \"${{ steps.version.outputs.version }}\"/" \
+            AppScope/app.json5
+
+      - name: Prepare signing materials
+        run: |
+          echo "${{ secrets.HARMONY_KEYSTORE_P12 }}" | base64 -d > /tmp/prism-release.p12
+          echo "${{ secrets.HARMONY_CERTIFICATE_CER }}" | base64 -d > /tmp/prism-release.cer
+          echo "${{ secrets.HARMONY_PROFILE_P7B }}" | base64 -d > /tmp/prism-release.p7b
+
+      - name: Build unsigned HAP and APP
+        run: |
+          set -euo pipefail
+          CLI="$HOME/harmony-cli"
+          # Signing is performed explicitly in the following step.
+          python3 - <<'PYCONFIG'
+          import json
+          from pathlib import Path
+          profile = Path('build-profile.json5')
+          config = json.loads(profile.read_text())
+          config['app']['signingConfigs'] = []
+          for product in config['app']['products']:
+              product.pop('signingConfig', None)
+          profile.write_text(json.dumps(config, indent=2))
+          PYCONFIG
+          "$CLI/tools/ohpm/bin/ohpm" install --all
+          mkdir -p node_modules/@ohos
+          ln -sfn "$CLI/tools/hvigor/hvigor" node_modules/@ohos/hvigor
+          ln -sfn "$CLI/tools/hvigor/hvigor-ohos-plugin" node_modules/@ohos/hvigor-ohos-plugin
+          HVIGOR="$CLI/tools/hvigor/hvigor/bin/hvigor.js"
+          export NODE_PATH="$PWD/node_modules${NODE_PATH:+:$NODE_PATH}"
+          # hvigor refuses to run without this env (00303217)
+          export DEVECO_SDK_HOME="$CLI/sdk"
+          node "$HVIGOR" clean --no-daemon
+          node "$HVIGOR" assembleHap --mode module -p module=entry@default -p product=default --no-daemon
+          node "$HVIGOR" assembleApp --mode project -p product=default --no-daemon
+
+      - name: Sign APP with release certificate
+        env:
+          KEYSTORE_PASS: ${{ secrets.HARMONY_KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.HARMONY_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          UNSIGNED_APP=$(find build/outputs -name '*-unsigned.app' -type f | head -1)
+          if [ -z "$UNSIGNED_APP" ]; then
+            echo "::error::No unsigned .app found"
+            find build/outputs -name '*.app' -type f 2>/dev/null || true
+            exit 1
+          fi
+          echo "Signing: $UNSIGNED_APP"
+          java -jar "$HOME/harmony-cli/sdk/default/openharmony/toolchains/lib/hap-sign-tool.jar" sign-app \
+            -mode localSign \
+            -keyAlias "${{ secrets.HARMONY_KEY_ALIAS }}" \
+            -keyPwd "$KEY_PASS" \
+            -appCertFile /tmp/prism-release.cer \
+            -profileFile /tmp/prism-release.p7b \
+            -inFile "$UNSIGNED_APP" \
+            -signAlg SHA256withECDSA \
+            -keystoreFile /tmp/prism-release.p12 \
+            -keystorePwd "$KEYSTORE_PASS" \
+            -outFile /tmp/prismplayer-${{ steps.version.outputs.version }}.app \
+            -compatibleVersion 12 \
+            -signCode 1
+          rm -f /tmp/prism-release.p12 /tmp/prism-release.cer /tmp/prism-release.p7b
+          cp /tmp/prismplayer-${{ steps.version.outputs.version }}.app /tmp/prismplayer-${{ steps.version.outputs.version }}.zip
+
+      - name: Upload artifact for publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-bundle
+          path: /tmp/prismplayer-${{ steps.version.outputs.version }}.app
+          retention-days: 1
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/harmony-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: /tmp/prismplayer-${{ steps.version.outputs.version }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-appgallery:
+    name: Publish to AppGallery Connect
+    needs: build-harmony
+    if: ${{ !inputs.skip_publish || startsWith(github.ref, 'refs/tags/harmony-v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clean publish directory
+        run: rm -rf /tmp/harmony-publish && mkdir -p /tmp/harmony-publish
+
+      - name: Download app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-bundle
+          path: /tmp/harmony-publish
+
+      - name: Compute file metadata
+        id: file-meta
+        run: |
+          APP_FILE=$(ls /tmp/harmony-publish/prismplayer-*.app | sort -V | tail -1)
+          FILE_SIZE=$(stat -c%s "$APP_FILE")
+          SHA256=$(sha256sum "$APP_FILE" | cut -d' ' -f1)
+          FILE_NAME=$(basename "$APP_FILE")
+          echo "file=$APP_FILE" >> "$GITHUB_OUTPUT"
+          echo "size=$FILE_SIZE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "name=$FILE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Get AGConnect Access Token (API Client)
+        id: auth
+        run: |
+          RESPONSE=$(curl -s -X POST \
+            "https://connect-api.cloud.huawei.com/api/oauth2/v1/token" \
+            -H "Content-Type: application/json" \
+            -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"${{ secrets.AGC_CLIENT_ID }}\",\"client_secret\":\"${{ secrets.AGC_CLIENT_SECRET }}\"}")
+          TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::Failed to get access token: $RESPONSE"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Get Upload URL
+        id: upload-url
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X GET \
+            "https://connect-api.cloud.huawei.com/api/publish/v2/upload-url/for-obs?appId=${{ secrets.AGC_APP_ID }}&fileName=${{ steps.file-meta.outputs.name }}&contentLength=${{ steps.file-meta.outputs.size }}&sha256=${{ steps.file-meta.outputs.sha256 }}&releaseType=1" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            -H "client_id: ${{ secrets.AGC_CLIENT_ID }}")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          echo "::group::Upload URL response (HTTP $HTTP_CODE)"
+          echo "$BODY" | jq .
+          echo "::endgroup::"
+          UPLOAD_URL=$(echo "$BODY" | jq -r '.urlInfo.url // .url' 2>/dev/null || echo "")
+          OBJECT_ID=$(echo "$BODY" | jq -r '.urlInfo.objectId // .objectId' 2>/dev/null || echo "")
+          HEADERS_JSON=$(echo "$BODY" | jq -c '.urlInfo.headers // .headers' 2>/dev/null || echo "")
+          if [ -z "$UPLOAD_URL" ] || [ "$UPLOAD_URL" = "null" ]; then
+            echo "::error::Failed to get upload URL (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+          echo "upload_url=$UPLOAD_URL" >> "$GITHUB_OUTPUT"
+          echo "object_id=$OBJECT_ID" >> "$GITHUB_OUTPUT"
+          echo "$HEADERS_JSON" > /tmp/obs-headers.json
+          echo "$BODY" > /tmp/upload-url-response.json
+
+      - name: Upload APP file to AppGallery
+        id: upload-file
+        run: |
+          APP_FILE="${{ steps.file-meta.outputs.file }}"
+          UPLOAD_URL="${{ steps.upload-url.outputs.upload_url }}"
+
+          OBS_AUTH=$(jq -r '.Authorization // empty' /tmp/obs-headers.json)
+          OBS_SHA256=$(jq -r '.["x-amz-content-sha256"] // empty' /tmp/obs-headers.json)
+          OBS_DATE=$(jq -r '.["x-amz-date"] // empty' /tmp/obs-headers.json)
+          OBS_HOST=$(jq -r '.Host // empty' /tmp/obs-headers.json)
+          OBS_UA=$(jq -r '.["user-agent"] // empty' /tmp/obs-headers.json)
+          OBS_CT=$(jq -r '.["Content-Type"] // empty' /tmp/obs-headers.json)
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$UPLOAD_URL" \
+            -H "Authorization: $OBS_AUTH" \
+            -H "x-amz-content-sha256: $OBS_SHA256" \
+            -H "x-amz-date: $OBS_DATE" \
+            -H "Host: $OBS_HOST" \
+            -H "user-agent: $OBS_UA" \
+            -H "Content-Type: $OBS_CT" \
+            --data-binary "@$APP_FILE")
+
+          echo "Upload HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::File upload failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+          echo "file_name=${{ steps.file-meta.outputs.name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Update App Package Info
+        id: package-info
+        run: |
+          RESPONSE=$(curl -s -X PUT \
+            "https://connect-api.cloud.huawei.com/api/publish/v3/app-package-info?appId=${{ secrets.AGC_APP_ID }}" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            -H "client_id: ${{ secrets.AGC_CLIENT_ID }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"fileName\":\"${{ steps.upload-file.outputs.file_name }}\",\"objectId\":\"${{ steps.upload-url.outputs.object_id }}\"}")
+          echo "::group::Update app package info response"
+          echo "$RESPONSE" | jq .
+          echo "::endgroup::"
+          RET=$(echo "$RESPONSE" | jq -r '.ret.code // .code // "unknown"')
+          if [ "$RET" != "0" ]; then
+            echo "::error::Update app package info failed: $RESPONSE"
+            exit 1
+          fi
+          PACKAGE_ID=$(echo "$RESPONSE" | jq -r '.packageId // .data.packageId // empty')
+          if [ -z "$PACKAGE_ID" ] || [ "$PACKAGE_ID" = "null" ]; then
+            echo "::error::No packageId in response: $RESPONSE"
+            exit 1
+          fi
+          echo "package_id=$PACKAGE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for package parsing
+        run: sleep 60
+
+      - name: Query compile status
+        run: |
+          for i in $(seq 1 20); do
+            RESPONSE=$(curl -s -X GET \
+              "https://connect-api.cloud.huawei.com/api/publish/v3/package/compile/status?appId=${{ secrets.AGC_APP_ID }}&pkgIds=${{ steps.package-info.outputs.package_id }}" \
+              -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+              -H "client_id: ${{ secrets.AGC_CLIENT_ID }}")
+            RET=$(echo "$RESPONSE" | jq -r '.ret.code // "unknown"')
+            if [ "$RET" != "0" ]; then
+              echo "::error::API error: $RESPONSE"
+              exit 1
+            fi
+            SUCCESS_STATUS=$(echo "$RESPONSE" | jq -r '.pkgStateList[0].successStatus // "unknown"')
+            echo "Attempt $i: successStatus = $SUCCESS_STATUS"
+            if [ "$SUCCESS_STATUS" = "0" ]; then
+              echo "Compile successful"
+              exit 0
+            fi
+            if [ "$SUCCESS_STATUS" = "2" ] || [ "$SUCCESS_STATUS" = "3" ]; then
+              echo "::error::Compile failed (successStatus=$SUCCESS_STATUS): $RESPONSE"
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "::error::Timed out waiting for compile"
+          exit 1
