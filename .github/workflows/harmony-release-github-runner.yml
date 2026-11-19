@@ -179,6 +179,9 @@ jobs:
     if: ${{ !inputs.skip_publish || startsWith(github.ref, 'refs/tags/harmony-v') }}
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout (whatsnew 需要仓库文件)
+        uses: actions/checkout@v4
+
       - name: Clean publish directory
         run: rm -rf /tmp/harmony-publish && mkdir -p /tmp/harmony-publish
 
@@ -203,6 +206,11 @@ jobs:
       - name: Get AGConnect Access Token (API Client)
         id: auth
         run: |
+          if [ -z "${{ secrets.AGC_CLIENT_ID }}" ] || [ -z "${{ secrets.AGC_CLIENT_SECRET }}" ] || [ -z "${{ secrets.AGC_APP_ID }}" ]; then
+            echo "::warning::AGC_CLIENT_ID / AGC_CLIENT_SECRET / AGC_APP_ID 未配置，跳过 AGC 上传（去 AGC 控制台取值后 gh secret set 再重跑）"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           RESPONSE=$(curl -s -X POST \
             "https://connect-api.cloud.huawei.com/api/oauth2/v1/token" \
             -H "Content-Type: application/json" \
@@ -216,6 +224,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Get Upload URL
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
         id: upload-url
         run: |
           RESPONSE=$(curl -s -w "\n%{http_code}" -X GET \
@@ -240,6 +249,7 @@ jobs:
           echo "$BODY" > /tmp/upload-url-response.json
 
       - name: Upload APP file to AppGallery
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
         id: upload-file
         run: |
           APP_FILE="${{ steps.file-meta.outputs.file }}"
@@ -269,6 +279,7 @@ jobs:
           echo "file_name=${{ steps.file-meta.outputs.name }}" >> "$GITHUB_OUTPUT"
 
       - name: Update App Package Info
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
         id: package-info
         run: |
           RESPONSE=$(curl -s -X PUT \
@@ -293,9 +304,11 @@ jobs:
           echo "package_id=$PACKAGE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Wait for package parsing
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
         run: sleep 60
 
       - name: Query compile status
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
         run: |
           for i in $(seq 1 20); do
             RESPONSE=$(curl -s -X GET \
@@ -321,3 +334,36 @@ jobs:
           done
           echo "::error::Timed out waiting for compile"
           exit 1
+
+      # 版本更新说明（whatsnew）：读仓库 whatsnew/<lang>.txt，经 v3 app-language-info
+      # 的 newFeatures 写入 AGC 草稿（≤500 字）。失败不阻断发版（可去控制台手填）。
+      - name: Set release notes (whatsnew)
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
+        run: |
+          set +e
+          shopt -s nullglob
+          FILES=(whatsnew/*.txt)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No whatsnew/*.txt found, skip"
+            exit 0
+          fi
+          for LANG_FILE in "${FILES[@]}"; do
+            LANGCODE=$(basename "$LANG_FILE" .txt)
+            CONTENT=$(head -c 1500 "$LANG_FILE" | tr -d '\r')
+            if [ ${#CONTENT} -gt 500 ]; then
+              echo "::warning::$LANG_FILE 超过 500 字，已截断"
+              CONTENT="${CONTENT:0:500}"
+            fi
+            RESPONSE=$(curl -s -X PUT \
+              "https://connect-api.cloud.huawei.com/api/publish/v3/app-language-info?appId=${{ secrets.AGC_APP_ID }}" \
+              -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+              -H "client_id: ${{ secrets.AGC_CLIENT_ID }}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg lang "$LANGCODE" --arg nf "$CONTENT" '{lang:$lang,newFeatures:$nf}')")
+            RET=$(echo "$RESPONSE" | jq -r '.ret.code // "unknown"')
+            if [ "$RET" = "0" ]; then
+              echo "whatsnew[$LANGCODE] 已写入"
+            else
+              echo "::warning::whatsnew[$LANGCODE] 写入失败（不影响发版，可去 AGC 控制台手填）: $RESPONSE"
+            fi
+          done
