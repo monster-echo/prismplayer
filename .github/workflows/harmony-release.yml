@@ -270,6 +270,39 @@ jobs:
           echo "::error::Timed out waiting for compile"
           exit 1
 
+      # 版本更新说明（whatsnew）：读仓库 whatsnew/<lang>.txt，经 v3 app-language-info
+      # 的 newFeatures 写入 AGC 草稿（≤500 字）。失败不阻断发版（可去控制台手填）。
+      - name: Set release notes (whatsnew)
+        if: ${{ steps.auth.outputs.skipped != 'true' }}
+        run: |
+          set +e
+          shopt -s nullglob
+          FILES=(whatsnew/*.txt)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No whatsnew/*.txt found, skip"
+            exit 0
+          fi
+          for LANG_FILE in "${FILES[@]}"; do
+            LANGCODE=$(basename "$LANG_FILE" .txt)
+            CONTENT=$(head -c 1500 "$LANG_FILE" | tr -d '\r')
+            if [ ${#CONTENT} -gt 500 ]; then
+              echo "::warning::$LANG_FILE 超过 500 字，已截断"
+              CONTENT="${CONTENT:0:500}"
+            fi
+            RESPONSE=$(curl -s -X PUT \
+              "https://connect-api.cloud.huawei.com/api/publish/v3/app-language-info?appId=${{ secrets.AGC_APP_ID }}" \
+              -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+              -H "client_id: ${{ secrets.AGC_CLIENT_ID }}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg lang "$LANGCODE" --arg nf "$CONTENT" '{lang:$lang,newFeatures:$nf}')")
+            RET=$(echo "$RESPONSE" | jq -r '.ret.code // "unknown"')
+            if [ "$RET" = "0" ]; then
+              echo "whatsnew[$LANGCODE] 已写入"
+            else
+              echo "::warning::whatsnew[$LANGCODE] 写入失败（不影响发版，可去 AGC 控制台手填）: $RESPONSE"
+            fi
+          done
+
       # 发布前需要人工审核，暂时无法完全自动化提交审核流程
       # - name: Submit for release
       #   run: |

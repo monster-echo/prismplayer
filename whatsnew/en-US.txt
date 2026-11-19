@@ -1,0 +1,7 @@
+First official release!
+· Watch from WebDAV / SMB / S3 / Emby / Plex / IPTV / YouTube / Bilibili
+· Auto-scrape posters & metadata, organize your library in one place
+· Embedded & external subtitles with styling options
+· Hardware decoding, playback speed and cache proxy for smooth playback
+· Privacy Vault: encrypt and protect your private videos
+Thanks for trying PrismPlayer!
