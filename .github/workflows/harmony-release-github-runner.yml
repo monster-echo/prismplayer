@@ -28,7 +28,7 @@ permissions:
 env:
   TOOLCHAIN_MIRROR_REPO: monster-echo/harmonyos-cli
   # 必须与 scripts/pack-toolchain.sh 里的 TOOLCHAIN_VERSION 一致
-  TOOLCHAIN_VERSION: '26.0.0.105-2'
+  TOOLCHAIN_VERSION: '26.0.0.105-3'
 
 jobs:
   build-harmony:

@@ -4,10 +4,11 @@
 #
 # 裁剪说明(相对 DevEco 完整安装 ~7.6G):
 #   - tools/node    : runner 用 actions/setup-node 装 Node 24,省 939M
-#   - */previewer   : assembleHap/assembleApp 不需要预览器,省 ~820M
 #   - hms/native    : 工程 CMake 链接的全部 NDK 库都在 openharmony/native,
 #                     hms/native(HMS NDK)用不到,省 1.8G
-# 保留 ~3.4G:gzip 后约 1.5-1.9G,按 1900M 分卷以适配 GitHub release 单文件 2GB 上限。
+#   注意 */previewer 必须保留:hvigor 做 SDK 完整性校验,缺了报 00303168,
+#   即使 assembleHap/assembleApp 不实际使用它
+# 保留 ~4.1G:gzip 后约 1.1G,按 1900M 分卷以适配 GitHub release 单文件 2GB 上限。
 #
 # 用法:
 #   ./scripts/pack-toolchain.sh                 # 只打包到 ~/Downloads
@@ -21,7 +22,7 @@ DEVECO_APP="/Applications/DevEco-Studio.app"
 REPO="${REPO:-monster-echo/harmonyos-cli}"
 # SDK 实际版本可从 Contents/sdk/default/sdk-pkg.json 的 "version" 读取,尾部 -N 为打包序号:
 # 工具链有任何变化(升级 DevEco、增删目录)时递增 -N,避免 CI 命中旧缓存。
-TOOLCHAIN_VERSION="26.0.0.105-2"
+TOOLCHAIN_VERSION="26.0.0.105-3"
 OUT_DIR="${OUT_DIR:-$HOME/Downloads}"
 
 SRC="$DEVECO_APP/Contents"
@@ -41,8 +42,7 @@ ditto "$SRC/sdk/default/openharmony" "$WORK/harmony-cli/sdk/default/openharmony"
 ditto "$SRC/sdk/default/hms"         "$WORK/harmony-cli/sdk/default/hms"
 # sdk-pkg.json 在 sdk/default 顶层,hvigor 靠它匹配工程 modelVersion,漏了会报 00303312
 cp "$SRC/sdk/default/sdk-pkg.json" "$WORK/harmony-cli/sdk/default/"
-rm -rf "$WORK/harmony-cli/sdk/default/openharmony/previewer"
-rm -rf "$WORK/harmony-cli/sdk/default/hms/previewer"
+# previewer 保留(00303118/00303168 完整性校验需要),只裁 hms/native
 rm -rf "$WORK/harmony-cli/sdk/default/hms/native"
 
 echo "$TOOLCHAIN_VERSION" > "$WORK/harmony-cli/toolchain-version"
