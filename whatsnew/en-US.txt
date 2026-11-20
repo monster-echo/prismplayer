@@ -1,7 +1,9 @@
-First official release!
-· Watch from WebDAV / SMB / S3 / Emby / Plex / IPTV / YouTube / Bilibili
-· Auto-scrape posters & metadata, organize your library in one place
-· Embedded & external subtitles with styling options
-· Hardware decoding, playback speed and cache proxy for smooth playback
-· Privacy Vault: encrypt and protect your private videos
-Thanks for trying PrismPlayer!
+Version 1.0.2
+· New: automatic intro skip and one-tap outro skip for episodes (adjustable)
+· New: official community entry — open Feishu directly or scan the QR code
+· New: branded share card; rate us opens AppGallery directly
+· Improved: tablet and HarmonyOS PC layouts, keyboard shortcuts and context menu
+· Fixed: washed-out menus and header in light theme
+· Fixed: system bars turning light after leaving the player in dark theme
+· Fixed: squeezed header and truncated long titles on phones
+· Terms and privacy policy now render in-app
