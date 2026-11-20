@@ -564,6 +564,7 @@ struct MediaDetailPage {
       .layoutWeight(1)
       .width('100%')
       .onRefreshing(async () => {
+        this.refreshing = true;
         await this.refreshDetail();
         this.refreshing = false;
       })

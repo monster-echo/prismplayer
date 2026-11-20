@@ -550,6 +550,7 @@ struct SourceBrowserPage {
       .width('100%')
       .layoutWeight(1)
       .onRefreshing(async () => {
+        this.refreshing = true;
         if (!this.loading) {
           await this.loadDirectory(this.currentDirPath, false);
         }

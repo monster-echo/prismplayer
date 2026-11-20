@@ -334,6 +334,7 @@ export struct SourcesView {
     .layoutWeight(1)
     .width('100%')
     .onRefreshing(async () => {
+      this.refreshing = true;
       await this.store.reloadAllData();
       this.refreshing = false;
     })

@@ -556,6 +556,7 @@ export struct LibraryView {
     .height('100%')
     .backgroundColor($r('app.color.bg_primary'))
     .onRefreshing(async () => {
+      this.refreshing = true;
       await this.store.reloadAllData();
       this.refreshing = false;
     })
