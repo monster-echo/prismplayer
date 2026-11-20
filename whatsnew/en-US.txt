@@ -1,9 +1,4 @@
-Version 1.0.2
-- Auto intro skip and one-tap outro skip for episodes
-- Official community entry: open Feishu or scan the QR code
-- Branded share card; rate us opens AppGallery
-- Tablet and HarmonyOS PC layouts, keyboard shortcuts and context menu
-- Fixed washed-out menus in light theme
-- Fixed system bars turning light after leaving the player
-- Fixed squeezed header and truncated titles on phones
-- Terms and privacy now render in-app
+Version 1.0.3
+- Pull-to-refresh across Library, Sources, History, Movie details and Source browser
+- PrismPlayer Pro lifetime unlock is now live: unlimited sources, 4K HDR and ASS subtitle styling
+- More stable Pro purchase and restore flow
