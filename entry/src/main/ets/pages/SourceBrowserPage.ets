@@ -38,6 +38,7 @@ struct SourceBrowserPage {
   @Local ytSearchQuery: string = '';
   @Local savingEntryPath: string = '';
   @Local saveFeedbackText: string = '';
+  @Local refreshing: boolean = false;
 
   private async saveEntryVideoOffline(entry: RemoteFileEntry): Promise<void> {
     if (!this.source || this.savingEntryPath) return;
@@ -219,6 +220,7 @@ struct SourceBrowserPage {
         onRightAction: () => this.loadDirectory(this.currentDirPath, false)
       })
 
+      Refresh({ refreshing: this.refreshing }) {
       Stack() {
         PageShell({ maxWidth: 1100 }) {
           Stack({ alignContent: Alignment.Top }) {
@@ -542,7 +544,17 @@ struct SourceBrowserPage {
         }
       }
       .width('100%')
+      .height('100%')
+      .backgroundColor($r('app.color.bg_primary'))
+      }
+      .width('100%')
       .layoutWeight(1)
+      .onRefreshing(async () => {
+        if (!this.loading) {
+          await this.loadDirectory(this.currentDirPath, false);
+        }
+        this.refreshing = false;
+      })
     }
     .width('100%')
     .height('100%')

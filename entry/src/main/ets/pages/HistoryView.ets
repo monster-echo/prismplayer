@@ -12,6 +12,7 @@ export struct HistoryView {
   @Param onPlayItem: (item: MediaItem, startPosMs: number) => void = () => {};
   @Param onOpenDetail: (item: MediaItem) => void = () => {};
   @Local store: AppStore = AppStore.getInstance();
+  @Local refreshing: boolean = false;
 
   private resolveItem(rec: WatchHistoryRecord): MediaItem {
     const matched = this.store.mediaItems.find(m => m.id === rec.itemId);
@@ -95,6 +96,8 @@ export struct HistoryView {
         }
         .width('100%')
 
+        Refresh({ refreshing: this.refreshing }) {
+        Column() {
         if (this.store.getVisibleWatchHistory().length === 0) {
           Column({ space: 10 }) {
             SymbolGlyph($r('sys.symbol.arrow_counterclockwise_clock'))
@@ -222,11 +225,21 @@ export struct HistoryView {
             .rowsGap(12)
             .width('100%')
           }
-          .layoutWeight(1)
+          .height('100%')
           .width('100%')
           .align(Alignment.TopStart)
           .scrollBar(BarState.Off)
         }
+        }
+        .width('100%')
+        .height('100%')
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .onRefreshing(async () => {
+          await this.store.reloadAllData();
+          this.refreshing = false;
+        })
       }
       .padding({
         left: Layout.gutter(this.breakpoint),

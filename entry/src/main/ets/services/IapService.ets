@@ -1,6 +1,8 @@
 import { iap } from '@kit.IAPKit';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { util } from '@kit.ArkTS';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { AppConstants } from '../common/Constants';
 import { ProTier } from '../common/Types';
 
@@ -21,11 +23,30 @@ export interface IapActionResult {
   message: string;
 }
 
-/** 华为 IAP 订单载荷中我们关心的字段（其余字段不参与判断）。 */
+/**
+ * createPurchase 返回的 purchaseData（新 API）：
+ * 顶层只有 jwsPurchaseOrder 等 JWS 字段，订单明细在其 payload 中。
+ */
+interface PurchaseDataEnvelope {
+  jwsPurchaseOrder?: string;
+}
+
+/** jwsPurchaseOrder 解码后的订单载荷（PurchaseOrderPayload）。 */
+interface PurchaseOrderPayload {
+  productType?: number;
+  purchaseToken?: string;
+  purchaseOrderId?: string;
+  finishStatus?: number;
+  /** 撤回原因码；为空代表购买成功。 */
+  purchaseOrderRevocationReasonCode?: string;
+  productId?: string;
+}
+
+/** queryOwnedPurchases 返回的订单载荷（旧 InAppPurchaseData 结构）。 */
 interface IapPurchasePayload {
   productId?: string;
   purchaseToken?: string;
-  purchaseOrderId?: string;
+  orderId?: string;
   purchaseState?: number;
   purchaseType?: number;
   consumptionState?: number;
@@ -91,8 +112,8 @@ export class IapService {
   }
 
   /**
-   * 拉起华为收银台。只有拿到 purchaseState=0 的订单才算成功，
-   * 成功后再 finishPurchase 确认发货；取消/失败一律不授予 Pro。
+   * 拉起华为收银台（新 API）。购买结果在 purchaseData.jwsPurchaseOrder 的 JWS 载荷里，
+   * purchaseOrderRevocationReasonCode 为空即支付成功；成功后先发权益再 finishPurchase 确认。
    */
   static async purchase(context: common.UIAbilityContext, product: IapProductDisplay): Promise<IapActionResult> {
     try {
@@ -101,19 +122,24 @@ export class IapService {
         productType: iap.ProductType.NONCONSUMABLE
       };
       const result = await iap.createPurchase(context, param);
-      const payload = IapService.parsePayload(result.purchaseData);
-      if (!payload) {
-        hilog.error(0x0001, TAG, 'purchase: empty payload product=%{public}s', product.productId);
-        return { success: false, tier: 'free', message: '支付结果为空，请稍后在「恢复购买」中重试' };
+      hilog.info(0x0001, TAG, 'purchase raw product=%{public}s data=%{public}s',
+        product.productId, result.purchaseData || '');
+      const envelope = IapService.parsePayload(result.purchaseData) as PurchaseDataEnvelope | null;
+      const payload = envelope?.jwsPurchaseOrder
+        ? IapService.decodeJwsPayload(envelope.jwsPurchaseOrder)
+        : null;
+      if (!payload || !payload.purchaseToken || !payload.purchaseOrderId) {
+        hilog.error(0x0001, TAG, 'purchase: empty/unparsable payload product=%{public}s', product.productId);
+        return { success: false, tier: 'free', message: '支付结果解析失败，请稍后在「恢复购买」中重试' };
       }
-      if (payload.purchaseState !== 0) {
-        hilog.warn(0x0001, TAG, 'purchase: state=%{public}d product=%{public}s',
-          payload.purchaseState ?? -1, product.productId);
-        return { success: false, tier: 'free', message: '支付未完成或已取消' };
+      if (payload.purchaseOrderRevocationReasonCode) {
+        hilog.warn(0x0001, TAG, 'purchase revoked product=%{public}s reason=%{public}s',
+          product.productId, payload.purchaseOrderRevocationReasonCode);
+        return { success: false, tier: 'free', message: '支付未完成或已撤销' };
       }
-      await IapService.finish(context, payload);
+      await IapService.finishOrder(context, payload.purchaseToken, payload.purchaseOrderId);
       hilog.info(0x0001, TAG, 'purchase ok product=%{public}s order=%{public}s',
-        payload.productId || product.productId, payload.purchaseOrderId || '');
+        payload.productId || product.productId, payload.purchaseOrderId);
       return {
         success: true,
         tier: IapService.tierOf(payload.productId || product.productId, product.tier),
@@ -125,12 +151,12 @@ export class IapService {
       return {
         success: false,
         tier: 'free',
-        message: `支付未完成：${msg}（需 AppGallery 正式签名包与已上架商品）`
+        message: `支付未完成：${msg}（如有未完成订单，请点「恢复购买」后重试）`
       };
     }
   }
 
-  /** 用当前华为账号恢复历史买断权益（换机/重装后调用）。 */
+  /** 用当前华为账号恢复历史买断权益（换机/重装后调用），并补确认未 finish 的订单。 */
   static async restorePurchases(context: common.UIAbilityContext): Promise<IapActionResult> {
     try {
       const param: iap.QueryPurchasesParameter = {
@@ -144,12 +170,16 @@ export class IapService {
       let best: ProTier = 'free';
       let bestProduct = '';
       for (const raw of list) {
-        const payload = IapService.parsePayload(raw);
+        const payload = IapService.parsePayload(raw) as IapPurchasePayload | null;
         if (!payload || payload.purchaseState !== 0) continue;
         const tier = IapService.tierOf(payload.productId || '', 'free');
         if (IapService.rank(tier) > IapService.rank(best)) {
           best = tier;
           bestProduct = payload.productId || '';
+        }
+        // 恢复权益视为发货，顺手把可能未确认的订单补 finish（旧结构订单号字段为 orderId）。
+        if (payload.purchaseToken && payload.orderId) {
+          await IapService.finishOrder(context, payload.purchaseToken, payload.orderId);
         }
       }
       if (best === 'free') {
@@ -164,25 +194,40 @@ export class IapService {
     }
   }
 
-  private static parsePayload(raw: string): IapPurchasePayload | null {
+  /** 兼容旧/新两种 JSON 载荷的解析（内容结构由调用方收窄）。 */
+  private static parsePayload(raw: string): object | null {
     if (!raw) return null;
     try {
-      return JSON.parse(raw) as IapPurchasePayload;
+      return JSON.parse(raw) as object;
     } catch (_e) {
       return null;
     }
   }
 
-  private static async finish(context: common.UIAbilityContext, payload: IapPurchasePayload): Promise<void> {
-    if (!payload.purchaseToken || !payload.purchaseOrderId) {
-      hilog.warn(0x0001, TAG, 'finish skipped: token/order missing');
-      return;
+  /** 解 JWS（header.payload.signature）的 payload 段，不校验签名（纯客户端应用，无服务端验签条件）。 */
+  private static decodeJwsPayload(jws: string): PurchaseOrderPayload | null {
+    try {
+      const parts = jws.split('.');
+      if (parts.length < 2) return null;
+      let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const pad = b64.length % 4;
+      if (pad === 2) b64 += '==';
+      else if (pad === 3) b64 += '=';
+      const bytes = new util.Base64Helper().decodeSync(b64);
+      const text = util.TextDecoder.create('utf-8').decodeToString(bytes);
+      return JSON.parse(text) as PurchaseOrderPayload;
+    } catch (_e) {
+      return null;
     }
+  }
+
+  private static async finishOrder(context: common.UIAbilityContext, purchaseToken: string,
+    purchaseOrderId: string): Promise<void> {
     try {
       await iap.finishPurchase(context, {
         productType: iap.ProductType.NONCONSUMABLE,
-        purchaseToken: payload.purchaseToken,
-        purchaseOrderId: payload.purchaseOrderId
+        purchaseToken: purchaseToken,
+        purchaseOrderId: purchaseOrderId
       });
     } catch (e) {
       // 确认失败不回滚权益：订单仍是 UNFINISHED，下次恢复购买会重新确认。
@@ -204,6 +249,10 @@ export class IapService {
 
   private static errText(e: Object): string {
     if (e instanceof Error) return e.message;
-    return String(e);
+    const bizErr = e as BusinessError;
+    if (bizErr && bizErr.code !== undefined) {
+      return `${bizErr.code}: ${bizErr.message ?? ''}`;
+    }
+    return JSON.stringify(e);
   }
 }

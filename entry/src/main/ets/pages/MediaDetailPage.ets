@@ -29,6 +29,7 @@ struct MediaDetailPage {
   @Local posterFailed: boolean = false;
   @Local showTechInfo: boolean = false;
   @Local isFav: boolean = false;
+  @Local refreshing: boolean = false;
 
   aboutToAppear(): void {
     const params = this.getUIContext().getRouter().getParams() as MediaDetailParams | undefined;
@@ -144,6 +145,18 @@ struct MediaDetailPage {
     return this.bp() === 'sm' ? 140 : 216;
   }
 
+  /** 下拉刷新：重读影库数据并同步当前影片/剧集的最新状态。 */
+  private async refreshDetail(): Promise<void> {
+    await this.store.reloadAllData();
+    if (this.movie) {
+      const latest = this.store.mediaItems.find(m => m.id === this.movie!.id);
+      if (latest) this.movie = latest;
+    } else if (this.series) {
+      const grp = this.store.getSeriesGroups().find(g => g.seriesKey === this.series!.seriesKey);
+      if (grp) this.series = grp;
+    }
+  }
+
   build() {
     Row() {
     Column() {
@@ -164,6 +177,7 @@ struct MediaDetailPage {
         }
       })
 
+      Refresh({ refreshing: this.refreshing }) {
       Scroll() {
         Column({ space: 18 }) {
           // Cinema Backdrop + Poster + Core Identity
@@ -542,10 +556,17 @@ struct MediaDetailPage {
         }
         .width('100%')
       }
-      .layoutWeight(1)
       .width('100%')
+      .height('100%')
       .align(Alignment.Top)
       .scrollBar(BarState.Off)
+      }
+      .layoutWeight(1)
+      .width('100%')
+      .onRefreshing(async () => {
+        await this.refreshDetail();
+        this.refreshing = false;
+      })
     }
     .width('100%')
     .height('100%')

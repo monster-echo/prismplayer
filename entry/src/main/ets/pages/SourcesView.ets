@@ -18,6 +18,7 @@ export struct SourcesView {
   @Local store: AppStore = AppStore.getInstance();
   @Local probeStatusMap: Record<string, string> = {};
   @Local probingSourceId: string = '';
+  @Local refreshing: boolean = false;
   private async runQuickProbe(src: MediaSource): Promise<void> {
     this.probingSourceId = src.id;
     const next: Record<string, string> = {};
@@ -56,9 +57,8 @@ export struct SourcesView {
   }
 
   build() {
-    Scroll() {
-      Column({ space: 18 }) {
-        // Sleek Single-Line Header + Unified Add Source Menu
+    Column() {
+        // Sleek Single-Line Header + Unified Add Source Menu（固定 header）
         Row({ space: 10 }) {
           Column({ space: 3 }) {
             Text('片源管理')
@@ -112,8 +112,16 @@ export struct SourcesView {
             }
           ], appMenuOptions())
         }
+        .padding({
+          left: Layout.gutter(this.breakpoint),
+          right: Layout.gutter(this.breakpoint),
+          top: 16
+        })
         .width('100%')
 
+        Refresh({ refreshing: this.refreshing }) {
+        Scroll() {
+          Column({ space: 18 }) {
         if (this.store.scanStatusText) {
           Row({ space: 8 }) {
             if (this.store.isScanning) {
@@ -321,7 +329,17 @@ export struct SourcesView {
     .width('100%')
     .height('100%')
     .align(Alignment.Top)
-    .backgroundColor($r('app.color.bg_primary'))
     .scrollBar(BarState.Off)
+    }
+    .layoutWeight(1)
+    .width('100%')
+    .onRefreshing(async () => {
+      await this.store.reloadAllData();
+      this.refreshing = false;
+    })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor($r('app.color.bg_primary'))
   }
 }

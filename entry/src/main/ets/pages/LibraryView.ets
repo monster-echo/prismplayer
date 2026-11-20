@@ -21,6 +21,7 @@ export struct LibraryView {
   @Local store: AppStore = AppStore.getInstance();
   @Local category: MediaCategory = 'all';
   @Local heroImgFailed: boolean = false;
+  @Local refreshing: boolean = false;
 
   private getFilteredMovies(): MediaItem[] {
     if (this.category === 'tv') return [];
@@ -65,9 +66,8 @@ export struct LibraryView {
   }
 
   build() {
-    Scroll() {
-      Column({ space: 20 }) {
-        // Sleek Cinema Header + Icon Search & Import
+    Column() {
+        // Sleek Cinema Header + Icon Search & Import（固定 header）
         Row({ space: 10 }) {
           Row({ space: 10 }) {
             if (this.breakpoint === 'sm') {
@@ -124,8 +124,16 @@ export struct LibraryView {
             this.store.importLocalVideos();
           })
         }
+        .padding({
+          left: Layout.gutter(this.breakpoint),
+          right: Layout.gutter(this.breakpoint),
+          top: 16
+        })
         .width('100%')
 
+        Refresh({ refreshing: this.refreshing }) {
+        Scroll() {
+          Column({ space: 20 }) {
         // Hero Cinema Spotlight Banner
         if (this.getHeroItem() !== null) {
           Stack({ alignContent: Alignment.BottomStart }) {
@@ -542,8 +550,16 @@ export struct LibraryView {
     .width('100%')
     .height('100%')
     .align(Alignment.Top)
-    .backgroundColor($r('app.color.bg_primary'))
     .scrollBar(BarState.Off)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor($r('app.color.bg_primary'))
+    .onRefreshing(async () => {
+      await this.store.reloadAllData();
+      this.refreshing = false;
+    })
+    }
   }
 
   @Builder
