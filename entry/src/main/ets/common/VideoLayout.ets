@@ -5,6 +5,13 @@ export interface PictureRect {
   heightVp: number;
 }
 
+export const DEFAULT_PICTURE_RECT: PictureRect = {
+  leftVp: 0,
+  topVp: 0,
+  widthVp: 360,
+  heightVp: 780
+};
+
 /**
  * Computes the on-screen rectangle of the video picture inside a letterboxed viewport,
  * mirroring XComponent sizing (aspectRatio + constraintSize maxWidth/maxHeight 100%, centered).

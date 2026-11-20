@@ -1,5 +1,6 @@
 import { Formatters } from '../common/Formatters';
 import { MediaArtwork } from '../common/MediaArtwork';
+import { PageShell } from '../components/PageShell';
 import { MediaDetailParams, MediaItem, PlayerLaunchParams } from '../common/Types';
 import { AppStore } from '../services/AppStore';
 
@@ -73,182 +74,188 @@ struct SearchPage {
   }
 
   build() {
-    Column({ space: 12 }) {
-      // Top Search Bar with Back button
-      Row({ space: 10 }) {
-        Button({ type: ButtonType.Circle }) {
-          SymbolGlyph($r('sys.symbol.chevron_left'))
-            .fontSize(20)
-            .fontWeight(FontWeight.Medium)
-            .fontColor([$r('app.color.text_primary')])
-        }
-        .width(38)
-        .height(38)
-        .backgroundColor($r('app.color.bg_elevated'))
-        .border({ width: 0.8, color: $r('app.color.fill_strong') })
-        .onClick(() => this.getUIContext().getRouter().back())
-
-        Row({ space: 8 }) {
-          SymbolGlyph($r('sys.symbol.magnifyingglass'))
-            .fontSize(16)
-            .fontColor([$r('app.color.text_muted')])
-          TextInput({ text: this.query, placeholder: '搜索片名、原盘文件名、演员或编码...' })
-            .layoutWeight(1)
+    Stack() {
+      PageShell({ maxWidth: 960 }) {
+        Column({ space: 12 }) {
+          // Top Search Bar with Back button
+          Row({ space: 10 }) {
+            Button({ type: ButtonType.Circle }) {
+              SymbolGlyph($r('sys.symbol.chevron_left'))
+                .fontSize(20)
+                .fontWeight(FontWeight.Medium)
+                .fontColor([$r('app.color.text_primary')])
+            }
+            .width(38)
             .height(38)
-            .fontSize(14)
-            .fontColor($r('app.color.text_primary'))
-            .placeholderColor($r('app.color.text_muted'))
-            .backgroundColor(Color.Transparent)
-            .padding({ left: 0, right: 0 })
-            .defaultFocus(true)
-            .onChange((val: string) => { this.query = val; })
+            .backgroundColor($r('app.color.bg_elevated'))
+            .border({ width: 0.8, color: $r('app.color.fill_strong') })
+            .onClick(() => this.getUIContext().getRouter().back())
 
-          if (this.query) {
-            SymbolGlyph($r('sys.symbol.xmark_circle_fill'))
-              .fontSize(16)
-              .fontColor([$r('app.color.text_muted')])
-              .onClick(() => { this.query = ''; })
+            Row({ space: 8 }) {
+              SymbolGlyph($r('sys.symbol.magnifyingglass'))
+                .fontSize(16)
+                .fontColor([$r('app.color.text_muted')])
+              TextInput({ text: this.query, placeholder: '搜索片名、原盘文件名、演员或编码...' })
+                .layoutWeight(1)
+                .height(38)
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .placeholderColor($r('app.color.text_muted'))
+                .backgroundColor(Color.Transparent)
+                .padding({ left: 0, right: 0 })
+                .defaultFocus(true)
+                .onChange((val: string) => { this.query = val; })
+
+              if (this.query) {
+                SymbolGlyph($r('sys.symbol.xmark_circle_fill'))
+                  .fontSize(16)
+                  .fontColor([$r('app.color.text_muted')])
+                  .onClick(() => { this.query = ''; })
+              }
+            }
+            .layoutWeight(1)
+            .height(40)
+            .padding({ left: 12, right: 10 })
+            .borderRadius(12)
+            .backgroundColor($r('app.color.bg_elevated'))
+            .border({ width: 0.8, color: $r('app.color.fill_strong') })
           }
-        }
-        .layoutWeight(1)
-        .height(40)
-        .padding({ left: 12, right: 10 })
-        .borderRadius(12)
-        .backgroundColor($r('app.color.bg_elevated'))
-        .border({ width: 0.8, color: $r('app.color.fill_strong') })
-      }
-      .width('100%')
-      .padding({ left: 18, right: 18, top: 12 })
+          .width('100%')
+          .padding({ left: 18, right: 18, top: 12 })
 
-      Scroll() {
-        Row({ space: 8 }) {
-          this.chip('全部影片', 'all')
-          this.chip('4K / 2160P', '4k')
-          this.chip('已配外挂字幕', 'sub')
-          this.chip('正在观看', 'watching')
-        }
-        .padding({ left: 18, right: 18 })
-      }
-      .scrollable(ScrollDirection.Horizontal)
-      .align(Alignment.TopStart)
-      .scrollBar(BarState.Off)
-      .width('100%')
+          Scroll() {
+            Row({ space: 8 }) {
+              this.chip('全部影片', 'all')
+              this.chip('4K / 2160P', '4k')
+              this.chip('已配外挂字幕', 'sub')
+              this.chip('正在观看', 'watching')
+            }
+            .padding({ left: 18, right: 18 })
+          }
+          .scrollable(ScrollDirection.Horizontal)
+          .align(Alignment.TopStart)
+          .scrollBar(BarState.Off)
+          .width('100%')
 
-      Text(`匹配 ${this.getResults().length} 项`)
-        .fontSize(12)
-        .fontColor($r('app.color.text_muted'))
-        .padding({ left: 20, right: 20 })
-        .width('100%')
-
-      if (this.getResults().length === 0) {
-        Column({ space: 10 }) {
-          SymbolGlyph($r('sys.symbol.magnifyingglass'))
-            .fontSize(38)
-            .fontColor([$r('app.color.text_muted')])
-          Text('未找到相关影片')
-            .fontSize(16)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_primary'))
-          Text('尝试更换关键词或清除筛选条件')
+          Text(`匹配 ${this.getResults().length} 项`)
             .fontSize(12)
             .fontColor($r('app.color.text_muted'))
-        }
-        .width('100%')
-        .padding({ top: 72 })
-      } else {
-        List({ space: 10 }) {
-          ForEach(this.getResults(), (item: MediaItem) => {
-            ListItem() {
-              Row({ space: 12 }) {
-                if (item.posterUrl) {
-                  Image(MediaArtwork.resolve(item.posterUrl))
-                    .width(58)
-                    .height(84)
-                    .objectFit(ImageFit.Cover)
-                    .borderRadius(8)
-                } else {
-                  Column() {
-                    Image($r('app.media.ic_file_video')).width(24).height(24)
-                  }
-                  .width(58)
-                  .height(84)
-                  .justifyContent(FlexAlign.Center)
-                  .linearGradient({
-                    angle: 145,
-                    colors: [
-                      [MediaArtwork.paletteFor(item.title).top, 0],
-                      [MediaArtwork.paletteFor(item.title).bottom, 1]
-                    ]
-                  })
-                  .borderRadius(8)
-                }
+            .padding({ left: 20, right: 20 })
+            .width('100%')
 
-                Column({ space: 4 }) {
-                  Text(item.title)
-                    .fontSize(15)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor($r('app.color.text_primary'))
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-                  Text(item.fileName)
-                    .fontSize(11)
-                    .fontColor($r('app.color.text_muted'))
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-                  Row({ space: 6 }) {
-                    if (item.year > 0) {
-                      Text(`${item.year}`).fontSize(11).fontColor($r('app.color.text_secondary'))
+          if (this.getResults().length === 0) {
+            Column({ space: 10 }) {
+              SymbolGlyph($r('sys.symbol.magnifyingglass'))
+                .fontSize(38)
+                .fontColor([$r('app.color.text_muted')])
+              Text('未找到相关影片')
+                .fontSize(16)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+              Text('尝试更换关键词或清除筛选条件')
+                .fontSize(12)
+                .fontColor($r('app.color.text_muted'))
+            }
+            .width('100%')
+            .padding({ top: 72 })
+          } else {
+            List({ space: 10 }) {
+              ForEach(this.getResults(), (item: MediaItem) => {
+                ListItem() {
+                  Row({ space: 12 }) {
+                    if (item.posterUrl) {
+                      Image(MediaArtwork.resolve(item.posterUrl))
+                        .width(58)
+                        .height(84)
+                        .objectFit(ImageFit.Cover)
+                        .borderRadius(8)
+                    } else {
+                      Column() {
+                        Image($r('app.media.ic_file_video')).width(24).height(24)
+                      }
+                      .width(58)
+                      .height(84)
+                      .justifyContent(FlexAlign.Center)
+                      .linearGradient({
+                        angle: 145,
+                        colors: [
+                          [MediaArtwork.paletteFor(item.title).top, 0],
+                          [MediaArtwork.paletteFor(item.title).bottom, 1]
+                        ]
+                      })
+                      .borderRadius(8)
                     }
-                    if (item.qualityTag) {
-                      Text(item.qualityTag)
-                        .fontSize(10)
+
+                    Column({ space: 4 }) {
+                      Text(item.title)
+                        .fontSize(15)
                         .fontWeight(FontWeight.Bold)
-                        .fontColor($r('app.color.accent_cyan'))
-                        .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                        .borderRadius(4)
-                        .backgroundColor('#1F38BDF8')
-                    }
-                    if (item.subtitleUrl) {
-                      Image($r('app.media.ic_file_subtitle')).width(14).height(14)
-                    }
-                    if (item.fileSize > 0) {
-                      Text(Formatters.formatBytes(item.fileSize))
+                        .fontColor($r('app.color.text_primary'))
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+                      Text(item.fileName)
                         .fontSize(11)
                         .fontColor($r('app.color.text_muted'))
-                    }
-                  }
-                }
-                .layoutWeight(1)
-                .alignItems(HorizontalAlign.Start)
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-                Button({ type: ButtonType.Circle }) {
-                  SymbolGlyph($r('sys.symbol.play_fill'))
-                    .fontSize(14)
-                    .fontColor([Color.White])
+                      Row({ space: 6 }) {
+                        if (item.year > 0) {
+                          Text(`${item.year}`).fontSize(11).fontColor($r('app.color.text_secondary'))
+                        }
+                        if (item.qualityTag) {
+                          Text(item.qualityTag)
+                            .fontSize(10)
+                            .fontWeight(FontWeight.Bold)
+                            .fontColor($r('app.color.accent_cyan'))
+                            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                            .borderRadius(4)
+                            .backgroundColor('#1F38BDF8')
+                        }
+                        if (item.subtitleUrl) {
+                          Image($r('app.media.ic_file_subtitle')).width(14).height(14)
+                        }
+                        if (item.fileSize > 0) {
+                          Text(Formatters.formatBytes(item.fileSize))
+                            .fontSize(11)
+                            .fontColor($r('app.color.text_muted'))
+                        }
+                      }
+                    }
+                    .layoutWeight(1)
+                    .alignItems(HorizontalAlign.Start)
+
+                    Button({ type: ButtonType.Circle }) {
+                      SymbolGlyph($r('sys.symbol.play_fill'))
+                        .fontSize(14)
+                        .fontColor([Color.White])
+                    }
+                    .width(36)
+                    .height(36)
+                    .backgroundColor($r('app.color.accent_blue'))
+                    .onClick(() => this.playItem(item))
+                  }
+                  .width('100%')
+                  .padding(12)
+                  .borderRadius(14)
+                  .backgroundColor($r('app.color.bg_elevated'))
+                  .border({ width: 0.8, color: $r('app.color.border_subtle') })
+                  .onClick(() => this.openDetail(item))
                 }
-                .width(36)
-                .height(36)
-                .backgroundColor($r('app.color.accent_blue'))
-                .onClick(() => this.playItem(item))
-              }
-              .width('100%')
-              .padding(12)
-              .borderRadius(14)
-              .backgroundColor($r('app.color.bg_elevated'))
-              .border({ width: 0.8, color: $r('app.color.border_subtle') })
-              .onClick(() => this.openDetail(item))
+              }, (item: MediaItem) => item.id)
             }
-          }, (item: MediaItem) => item.id)
+            .layoutWeight(1)
+            .width('100%')
+            .padding({ left: 18, right: 18, bottom: 20 })
+          }
         }
-        .layoutWeight(1)
         .width('100%')
-        .padding({ left: 18, right: 18, bottom: 20 })
+        .height('100%')
+        .backgroundColor($r('app.color.bg_primary'))
       }
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.bg_primary'))
   }
 }

@@ -21,6 +21,26 @@
       "value": "#CC14161D"
     },
     {
+      "name": "menu_bg",
+      "value": "#1B1E27"
+    },
+    {
+      "name": "menu_border",
+      "value": "#33FFFFFF"
+    },
+    {
+      "name": "nav_active_bg",
+      "value": "#2A3B82F6"
+    },
+    {
+      "name": "nav_active_border",
+      "value": "#4D3B82F6"
+    },
+    {
+      "name": "nav_active_fg",
+      "value": "#FFFFFF"
+    },
+    {
       "name": "border_subtle",
       "value": "#1FFFFFFF"
     },

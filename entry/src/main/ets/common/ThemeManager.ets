@@ -1,5 +1,6 @@
 import { common, Configuration, ConfigurationConstant, EnvironmentCallback } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeMode } from './Types';
 
 /**
@@ -10,6 +11,8 @@ import { ThemeMode } from './Types';
 export class ThemeManager {
   private static appContext: common.ApplicationContext | null = null;
   private static mainWindow: window.Window | null = null;
+  /** 当前生效的深浅（显式记录，避免资源管理器与实际模式不一致时恢复错色）；null = 跟随系统且尚未解析 */
+  private static effectiveDark: boolean | null = null;
 
   static init(appContext: common.ApplicationContext, mainWindow: window.Window | null): void {
     ThemeManager.appContext = appContext;
@@ -17,6 +20,7 @@ export class ThemeManager {
     try {
       const envCallback: EnvironmentCallback = {
         onConfigurationUpdated: (config: Configuration) => {
+          hilog.info(0x0001, 'PrismTheme', 'config colorMode=%{public}d', config.colorMode ?? -1);
           ThemeManager.onEffectiveModeChanged(config);
         },
         onMemoryLevel: () => {
@@ -40,24 +44,48 @@ export class ThemeManager {
       // Non-fatal
     }
     if (mode === 'light') {
+      ThemeManager.effectiveDark = false;
       ThemeManager.applyChrome(false);
     } else if (mode === 'dark') {
+      ThemeManager.effectiveDark = true;
       ThemeManager.applyChrome(true);
     } else {
       // 跟随系统：等待 EnvironmentCallback 带着解析后的 colorMode 回调再上色
-      ThemeManager.syncWindowChromeByResource();
+      ThemeManager.effectiveDark = null;
+      ThemeManager.restoreChrome();
     }
     AppStorage.setOrCreate('themeMode', mode);
   }
 
   private static onEffectiveModeChanged(config: Configuration): void {
     if (config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK) {
+      ThemeManager.effectiveDark = true;
       ThemeManager.applyChrome(true);
     } else if (config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT) {
+      ThemeManager.effectiveDark = false;
       ThemeManager.applyChrome(false);
     } else {
-      ThemeManager.syncWindowChromeByResource();
+      ThemeManager.restoreChrome();
     }
+  }
+
+  /** 按当前生效主题恢复窗口与系统栏（播放页退出、系统栏重新启用后调用）。 */
+  static restoreChrome(): void {
+    ThemeManager.applyChrome(ThemeManager.resolveDark());
+  }
+
+  private static resolveDark(): boolean {
+    if (ThemeManager.effectiveDark !== null) return ThemeManager.effectiveDark;
+    // 跟随系统且回调未到：此时应用模式 == 系统模式，资源解析结果可信
+    const rm = ThemeManager.appContext?.resourceManager;
+    if (rm) {
+      try {
+        return ThemeManager.toHex(rm.getColorSync($r('app.color.bg_primary'))) !== '#F1F3F6';
+      } catch (_e) {
+        // fall through
+      }
+    }
+    return false;
   }
 
   private static applyChrome(dark: boolean): void {
@@ -73,18 +101,6 @@ export class ThemeManager {
         navigationBarColor: bg,
         navigationBarContentColor: fg
       }).catch(() => {});
-    } catch (_e) {
-      // Non-fatal
-    }
-  }
-
-  /** 无已知生效模式时的兜底：按资源管理器当前解析结果上色（配置稳定时调用）。 */
-  private static syncWindowChromeByResource(): void {
-    const rm = ThemeManager.appContext?.resourceManager;
-    if (!rm) return;
-    try {
-      const bg = ThemeManager.toHex(rm.getColorSync($r('app.color.bg_primary')));
-      ThemeManager.applyChrome(bg !== '#F1F3F6');
     } catch (_e) {
       // Non-fatal
     }
@@ -108,7 +124,7 @@ export class ThemeManager {
         }).catch(() => {});
         return;
       }
-      ThemeManager.syncWindowChromeByResource();
+      ThemeManager.restoreChrome();
     } catch (_e) {
       // Non-fatal
     }

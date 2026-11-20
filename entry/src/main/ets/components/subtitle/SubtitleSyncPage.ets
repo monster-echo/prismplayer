@@ -29,7 +29,7 @@ export struct SubtitleSyncPage {
     Column() {
       SubtitlePageHeader({
         title: '时间轴同步',
-        caption: '只对外挂字幕生效；硬解 / 软解通用，音频继续播放',
+        caption: '仅对外挂字幕生效，音频继续播放',
         onBack: () => this.onBack(),
         onClose: () => this.onClose()
       })
@@ -39,7 +39,7 @@ export struct SubtitleSyncPage {
           Column({ space: 10 }) {
             SubtitleSectionHeader({
               title: '当前字幕',
-              note: '播放到下一句时这里会实时更新'
+              note: '播放到下一句时更新'
             })
             Text(this.session.currentCueText ? this.session.currentCueText : '当前没有正在显示的字幕')
               .fontSize(15)
@@ -80,7 +80,7 @@ export struct SubtitleSyncPage {
           .alignItems(HorizontalAlign.Center)
 
           Column({ space: 10 }) {
-            SubtitleSectionHeader({ title: '微调', note: '常用步进为 0.1 秒，0.5 秒用于明显错位' })
+            SubtitleSectionHeader({ title: '微调', note: '0.1 秒微调；0.5 秒快速对齐' })
             Row({ space: 8 }) {
               this.nudgeButton('-1.0s', -1000)
               this.nudgeButton('-0.5s', -500)
@@ -110,11 +110,6 @@ export struct SubtitleSyncPage {
           .border({ width: 0.7, color: '#1FFFFFFF' })
           .alignItems(HorizontalAlign.Start)
 
-          Text('微调结果会写进当前视频的观看记录；内嵌字幕轨由系统渲染，不受此延时影响。')
-            .fontSize(10)
-            .lineHeight(16)
-            .fontColor('#6B7280')
-            .padding({ left: 4, right: 4 })
         }
         .padding({ left: 18, right: 18, top: 8, bottom: 36 })
         .width('100%')

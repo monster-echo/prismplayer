@@ -17,7 +17,7 @@ export struct SubtitleStylePage {
     Column() {
       SubtitlePageHeader({
         title: '字幕样式',
-        caption: '修改实时生效，并保存为后续视频的默认样式',
+        caption: '实时生效，保存为默认样式',
         onBack: () => this.onBack(),
         onClose: () => this.onClose()
       })
@@ -41,11 +41,6 @@ export struct SubtitleStylePage {
             onLanguageMode: (m: SubtitleLanguageMode) => this.session.setLanguageMode(m)
           })
 
-          Text('字幕样式是全局默认值：这里与设置页编辑的是同一套数据，调整后新打开的视频都会沿用。')
-            .fontSize(10)
-            .lineHeight(16)
-            .fontColor('#6B7280')
-            .padding({ left: 4, right: 4 })
         }
         .padding({ left: 18, right: 18, top: 8, bottom: 36 })
         .width('100%')

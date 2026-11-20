@@ -1,43 +1,73 @@
-# 纯血鸿蒙跨端 WebDAV / 网盘播放器（HarmonyOS NEXT + 鸿蒙 PC）
+# 棱镜影院 PrismPlayer
 
-面向 **HarmonyOS 手机 + 平板 + 鸿蒙电脑（2in1）** 的全端原生高清媒体播放器（对标 Infuse）。基于 **ArkTS + C++ NDK** 架构，主打 **WebDAV / SMB / 网盘（Alist/OpenList + 生态盘）直连流播、全格式硬解/软解兜底、高颜值海报墙刮削、外挂/内封特效字幕渲染、跨端接续与 PC 键鼠深度适配**。
+**把你自己的 NAS、网盘和本地影片，变成一台鸿蒙上的私人影院。**
 
-- **目标终端**：`phone` / `tablet` / `2in1`（鸿蒙电脑）
-- **商业定位**：买断制 Pro（早鸟 ¥38 / 标准 ¥48 / 家庭跨端 ¥68，支持华为 IAP 非消耗型内购，不搞强制高价年费订阅）
-- **开发周期**：6–8 周 MVP 上架（Week 1–4 内核与媒体源，Week 5–6 跨端 UI 与海报墙，Week 7–8 鸿蒙 PC 适配、性能压测与合规提审）
+棱镜影院是一款面向 HarmonyOS 的原生播放器：连接你自己的 WebDAV、SMB、Plex、Emby、AList、S3 或本地文件，自动刮削海报墙，直接播放 4K HDR 影片。不内置任何片源，也不会上传你的影片和账号。
 
-## 目录结构
+---
 
-```text
-harmony-webdav-player/
-├── README.md               # 项目定位、目录约定与启动清单
-└── docs/
-    ├── prd.md              # 产品需求文档 v0.1（竞品对标、三端交互、功能边界、商业化与 8 周排期）
-    └── architecture.md     # C++ NDK + ArkTS 技术架构设计（播放管线、Range 缓存、字幕渲染与 PC 适配）
-```
+## 它能做什么
 
-## 核心技术栈
+- **直连你自己的片源**：WebDAV、SMB（SMB2/3）、Plex、Emby、AList、S3（AWS / Cloudflare R2 / MinIO）、IPTV / M3U、手机本地视频，以及 B 站 / 抖音等公开视频链接。
+- **4K HDR 流畅播放**：优先硬件解码，遇到设备不支持的编码自动切 FFmpeg 软解兜底，10-bit HEVC 也能播。
+- **特效字幕**：ASS / SSA 特效、双语字幕、字幕搜索（SubDL / OpenSubtitles）、外挂与内嵌字幕自动匹配、延迟微调。
+- **海报墙与剧集管理**：接入 TMDB 自动刮削海报、简介、季集信息；电影与剧集自动分组，记住每一集的进度。
+- **为追剧做的细节**：跳过片头 / 片尾、倍速播放、音轨切换、画面比例、手势操作。
+- **三端一致**：手机、平板、鸿蒙电脑（2in1）同一套体验；鸿蒙电脑支持键鼠快捷键与多窗口，手机与平板之间可用「应用接续」继续播放。
+- **私密内容**：可把指定文件夹设为隐藏，解锁后才显示。
 
-1. **ArkTS UI 与跨端适配**：Stage 模型、响应式断点（`sm`/`md`/`lg`/`xl`）、`Navigation` 分栏、`2in1` 多窗口与键鼠快捷键、`AVSession` 播控中心、分布式跨端接续。
-2. **C++ NDK 播放内核**：
-   - **主路径（低功耗硬解）**：`OH_AVDemuxer` / FFmpeg `libavformat` 解封装 + `OH_AVCodec`（`OH_VideoDecoder` / `OH_AudioDecoder`）硬件解码 + `NativeWindow`（`XComponent` 零拷贝送显）+ `OHAudio`（`OH_AudioRenderer`）。
-   - **兜底路径（全格式软解）**：FFmpeg（`libavcodec` / `libswresample`）接管冷门编码、多声道混音（DTS/AC3/TrueHD → PCM）与高码率软解。
-   - **字幕管线**：`libass` 矢量渲染（ASS/SSA 特效字幕）叠加纹理层 + SRT/VTT/PGS 渲染与字体回退。
-3. **流媒体传输层**：`libcurl`（HTTP/2 + 连接池）实现 WebDAV `PROPFIND` 与 HTTP `Range` 分片预读环形缓冲区（RingBuffer），`libsmb2` 支撑局域网 SMB v2/v3 直连。
-4. **本地媒体库**：`RelationalStore`（SQLite）存储片源、影片元数据、分集关系与播放进度；本地磁盘缓存海报封面与 NFO 解析结果。
+## 支持的片源
 
-## 本机工具链核验
+| 类型 | 说明 |
+|---|---|
+| WebDAV | 群晖、飞牛 fnOS、威联通、Nextcloud 等 |
+| SMB | 局域网共享，SMB2 / SMB3 |
+| Plex / Emby | 读取已有媒体库 |
+| AList / OpenList | 阿里云盘、夸克、115 等聚合 |
+| S3 | AWS S3、Cloudflare R2、MinIO 等对象存储 |
+| IPTV / M3U | 直播源播放 |
+| 本地视频 | 手机或平板里的文件 |
+| 在线链接 | 粘贴公开视频链接直接播 |
 
-当前工作区所在环境已安装 DevEco Studio SDK（OpenHarmony API 26，`hvigorw 6.26.8`），具备以下原生多媒体 NDK 头文件：
+## 开始使用
 
-- `multimedia/player_framework/`：`avplayer.h`、`avmedia_source.h`、`native_avcodec_videodecoder.h`、`native_avdemuxer.h`、`native_avbuffer.h`、`lowpower_video_sink.h`
-- `ace/xcomponent/`：`native_interface_xcomponent.h`
-- `native_window/`：`external_window.h`
-- `ohaudio/`：`native_audiorenderer.h`、`native_audiostreambuilder.h`
+1. **添加片源**：设置 → 片源管理 → 添加片源，填写地址和账号，保存后即可浏览目录。
+2. **刮削海报（可选）**：在设置 → TMDB 海报墙刮削里填入自己的 TMDB API Key，扫描后自动匹配海报与季集；不填也能直接播放。
+3. **开始播放**：在影库点开影片，或在「最近观看」里继续上次的进度。
 
-## 启动前置清单（Week 0）
+> 账号密码使用系统硬件级密钥库（HUKS）加密，仅保存在本机；App 没有自己的服务器，也不会把你的凭据发到任何第三方。
 
-- [ ] 在 DevEco Studio 中以 **Native C++** 模板在本目录初始化工程，勾选设备类型 `phone`、`tablet`、`2in1`；
-- [ ] 确定最终 `bundleName` 并立即启动 **ICP 备案**（因联网访问 WebDAV/TMDB 需申请 `ohos.permission.INTERNET`，AppGallery 上架强校验）；
-- [ ] 同步发邮件开通 **华为 IAP 联运服务**（非消耗型商品：Pro 买断 / 家庭版）与申请 **TMDB API Key**；
-- [ ] 准备三端真机调试矩阵：纯血鸿蒙手机、华为平板、鸿蒙 PC（或 2in1 模拟器/真机），以及局域网测试介质（4K HEVC 10bit MKV、Dolby/DTS 音轨、特效 ASS 字幕、WebDAV/Alist 测试源）。
+## Pro 买断
+
+免费版可以体验 **1 个片源**，Pro 解锁无限片源与全部功能。
+
+| 方案 | 价格 | 说明 |
+|---|---|---|
+| 个人永久版 | ¥48 | 同一华为账号下手机 / 平板 / 鸿蒙电脑三端通用 |
+| 家庭永久版 | ¥68 | 在上述基础上支持华为家庭组共享（最多 5 人） |
+
+- 通过华为应用内支付一次性买断，**不是订阅**，不会自动续费；
+- 换机或重装后，在「设置 → PrismPlayer Pro → 恢复购买」用同一华为账号恢复；
+- 退款按华为应用商店规则处理。
+
+## 隐私与协议
+
+- 你的影片、片源账号密码、播放记录都只存在本机；
+- App 不含广告、统计或崩溃上报 SDK；
+- 完整的处理说明见 [隐私政策](https://auth.zhongbei.tech/legal/privacy?app=prismplayer) 与 [用户服务协议](https://auth.zhongbei.tech/legal/terms?app=prismplayer)，App 内「设置 → 隐私政策 / 用户服务协议」也能查看。
+
+## 反馈与联系
+
+- 官方社群（飞书）：设置 → 联系与分享 → 官方社群，扫码加入；
+- 邮箱：hello@zhongbei.tech
+- 遇到播放问题，请附上影片编码信息（如 4K HEVC 10-bit）与设备型号，便于定位。
+
+## 系统要求
+
+- HarmonyOS NEXT（纯血鸿蒙），手机、平板、鸿蒙电脑（2in1）；
+- 播放网络片源需要设备与片源在同一网络，或片源可公网访问；
+- 刮削与字幕搜索需要联网，且依赖对应第三方服务可用。
+
+---
+
+English version: [README.en.md](README.en.md)

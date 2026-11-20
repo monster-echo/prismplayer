@@ -16,7 +16,7 @@ export struct SubtitleHubPage {
     const item = this.session.mediaItem;
     if (!item) return '当前没有播放中的视频';
     const quality = item.qualityTag ? ` · ${item.qualityTag}` : '';
-    return `当前视频：${item.title}${quality}`;
+    return `${item.title}${quality}`;
   }
 
   private trackSummary(): string {
@@ -24,7 +24,7 @@ export struct SubtitleHubPage {
     const enabled = this.session.enabledTrackIds.length;
     const total = this.session.externalTracks.length;
     const embedded = this.session.selectedEmbeddedTrack >= 0 ? '内嵌已选' : '内嵌关';
-    return `${enabled}/${total} 外挂 · ${embedded}`;
+    return `外挂 ${enabled}/${total} · ${embedded}`;
   }
 
   private styleSummary(): string {
@@ -59,31 +59,23 @@ export struct SubtitleHubPage {
       })
 
       if (!this.session.active) {
-        Column({ space: 8 }) {
-          Text('当前没有可用的字幕会话').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#E5E7EB')
-          Text('请先从播放页进入字幕中心。').fontSize(12).fontColor('#9CA3AF')
-        }
-        .width('100%')
-        .padding(24)
-        .borderRadius(14)
-        .backgroundColor('#14161D')
-        .margin({ left: 18, right: 18, top: 8 })
-        .alignItems(HorizontalAlign.Start)
+        Text('请从播放页打开字幕')
+          .fontSize(13)
+          .fontColor('#9CA3AF')
+          .width('100%')
+          .padding(24)
+          .borderRadius(14)
+          .backgroundColor('#14161D')
+          .margin({ left: 18, right: 18, top: 8 })
       } else {
         Scroll() {
           Column({ space: 16 }) {
             Column({ space: 12 }) {
               SubtitleToggleRow({
                 title: '显示字幕',
-                desc: `已启用 ${this.session.enabledTrackIds.length} 条外挂字幕 · 内嵌字幕：${this.session.selectedEmbeddedLabel()}`,
                 value: this.session.enabled,
                 onChange: (v: boolean) => this.session.setEnabled(v)
               })
-              Divider().color('#1FFFFFFF')
-              Text('每个功能独立成一页；从播放器打开的字幕面板只负责当前这一部视频。')
-                .fontSize(10)
-                .lineHeight(15)
-                .fontColor('#6B7280')
             }
             .width('100%')
             .padding(16)
@@ -140,11 +132,6 @@ export struct SubtitleHubPage {
             .backgroundColor('#14161D')
             .border({ width: 0.7, color: '#1FFFFFFF' })
 
-            Text('内嵌字幕遮挡属于「英语学习模式」：用黑条盖住画面里烧录的硬字幕，长按画面可临时露出。')
-              .fontSize(10)
-              .lineHeight(16)
-              .fontColor('#6B7280')
-              .padding({ left: 4, right: 4 })
           }
           .padding({ left: 18, right: 18, top: 8, bottom: 36 })
           .width('100%')

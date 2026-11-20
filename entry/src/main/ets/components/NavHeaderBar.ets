@@ -7,7 +7,11 @@ export struct NavHeaderBar {
   @Param backLabel: string = '';
   @Param rightLabel: string = '';
   @Param rightIcon: Resource | undefined = undefined;
-  @Param rightAccent: boolean = false;
+  /** 水平内边距：页面外层已自带留白时传 0，避免 header 内容比正文多缩进一圈 */
+  @Param inset: number = 18;
+  @Param statusLabel: string = '';
+  @Param statusIcon: Resource | undefined = undefined;
+  @Param statusAccent: boolean = false;
   @Param onBack: () => void = () => {};
   @Param onRightAction: () => void = () => {};
 
@@ -65,16 +69,29 @@ export struct NavHeaderBar {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      if (!this.rightLabel && this.rightIcon) {
+      if (this.statusLabel) {
+        Row({ space: 4 }) {
+          if (this.statusIcon) {
+            SymbolGlyph(this.statusIcon)
+              .fontSize(14)
+              .fontColor([this.statusAccent ? $r('app.color.success') : $r('app.color.accent_gold')])
+          }
+          Text(this.statusLabel)
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.statusAccent ? $r('app.color.success') : $r('app.color.accent_gold'))
+            .maxLines(1)
+        }
+      } else if (!this.rightLabel && this.rightIcon) {
         Button({ type: ButtonType.Circle }) {
           SymbolGlyph(this.rightIcon)
             .fontSize(16)
-            .fontColor([this.rightAccent ? Color.White : $r('app.color.accent_blue')])
+            .fontColor([$r('app.color.accent_blue')])
         }
         .width(38)
         .height(38)
-        .backgroundColor(this.rightAccent ? $r('app.color.accent_blue') : '#1F5E8BFF')
-        .border({ width: this.rightAccent ? 0 : 0.6, color: '#445E8BFF' })
+        .backgroundColor($r('app.color.nav_active_bg'))
+        .border({ width: 0.6, color: $r('app.color.nav_active_border') })
         .onClick(() => this.onRightAction())
       } else if (this.rightLabel || this.rightIcon) {
         Button() {
@@ -82,29 +99,28 @@ export struct NavHeaderBar {
             if (this.rightIcon) {
               SymbolGlyph(this.rightIcon)
                 .fontSize(14)
-                .fontColor([this.rightAccent ? Color.White : $r('app.color.accent_blue')])
+                .fontColor([$r('app.color.accent_blue')])
             }
             if (this.rightLabel) {
               Text(this.rightLabel)
                 .fontSize(12)
                 .fontWeight(FontWeight.Medium)
-                .fontColor(this.rightAccent ? Color.White : $r('app.color.accent_blue'))
+                .fontColor($r('app.color.accent_blue'))
                 .maxLines(1)
             }
           }
         }
         .height(36)
         .padding({ left: 12, right: 12 })
-        .backgroundColor(this.rightAccent ? $r('app.color.accent_blue') : '#1F5E8BFF')
+        .backgroundColor($r('app.color.nav_active_bg'))
         .borderRadius(10)
-        .border({ width: this.rightAccent ? 0 : 0.6, color: '#445E8BFF' })
+        .border({ width: 0.6, color: $r('app.color.nav_active_border') })
         .onClick(() => this.onRightAction())
       }
     }
     .width('100%')
-    .padding({ left: 18, right: 18, top: 12, bottom: 10 })
-    .backgroundColor($r('app.color.bar_glass'))
-    .backdropBlur(16)
-    .border({ width: { bottom: 0.6 }, color: $r('app.color.fill_subtle') })
+    .padding({ left: this.inset, right: this.inset, top: 12, bottom: 10 })
+    .backgroundColor($r('app.color.bg_primary'))
+    .border({ width: { bottom: 0.6 }, color: $r('app.color.border_subtle') })
   }
 }

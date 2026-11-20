@@ -9,7 +9,7 @@ export class AppConstants {
   static readonly DEFAULT_TMDB_HOST: string = 'https://api.themoviedb.org/3';
   static readonly DEFAULT_TMDB_IMAGE_BASE: string = 'https://image.tmdb.org/t/p/w500';
   static readonly DEFAULT_CACHE_MB: number = 64;
-  static readonly FREE_MAX_SOURCES: number = 999;
+  static readonly FREE_MAX_SOURCES: number = 1;
   static readonly FREE_MAX_LIBRARY_ITEMS: number = 999999;
 
   static readonly VIDEO_EXTENSIONS: string[] = [
@@ -45,10 +45,16 @@ export class AppConstants {
     { format: 'dts', label: 'DTS-HD / TrueHD / EAC3', category: 'audio', desc: '影院多声道源码音轨（系统硬解易无声或报错，自动路由 FFmpeg 软解）', defaultHw: false }
   ];
 
+  /**
+   * App Linking 落地域名。必须在 AGC「App Linking」里把该域名配置为本应用所有，
+   * 并在 values/string 的 ohos_mutual_auth / module.json5 的 uris 中同步声明；
+   * 未配置前分享出去的链接只会落商店，不会直达播放。
+   */
+  static readonly APP_LINK_BASE: string = 'https://prismplayer.zhongbei.tech/link';
+
   // IAP Product IDs (replace with AppGallery Connect configured IDs before release)
-  static readonly IAP_PRO_EARLY: string = 'prism_pro_early_38';
-  static readonly IAP_PRO_STANDARD: string = 'prism_pro_lifetime_48';
-  static readonly IAP_PRO_FAMILY: string = 'prism_pro_family_68';
+  static readonly IAP_PRO_STANDARD: string = 'prism_pro_lifetime';
+  static readonly IAP_PRO_FAMILY: string = 'prism_pro_family';
 
   // 内置字幕源（SubDL）访问凭据，应用内不展示
   static readonly SUBDL_API_KEY: string = 'subdl_ZqYY18HnlHcvH1y7fnslrxVOFMtFNHECdkXOrm0pGh0';
@@ -57,8 +63,13 @@ export class AppConstants {
   static readonly OPENSUBTITLES_API_KEY: string = '5ed03aee65c5d26e0a0152a10dca2bb3';
   static readonly OPENSUBTITLES_USER_TOKEN: string = 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI1ZWQwM2FlZTY1YzVkMjZlMGEwMTUyYTEwZGNhMmJiMyIsIm5iZiI6MTc5NTA5NDYxOS4yMTEsInN1YiI6IjZhZmVmODViZjU4YzAyNmY5MTdmZTZkNCIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.lbgEHnBuPZb01Ze16RTvFGjnTJ6JY0ROaN-k-0ErZVI';
 
-  // 合规信息：上架华为应用市场前请替换为真实联系邮箱，并在 AGC 后台填写对应隐私政策网页版 URL
-  static readonly SUPPORT_EMAIL: string = 'support@prismplayer.example';
+  /** 合规联系邮箱（AGC / 隐私政策 / 用户协议统一使用） */
+  static readonly SUPPORT_EMAIL: string = 'hello@zhongbei.tech';
+  /**
+   * 用户群：走 feishu:// 私有 scheme，只有装了飞书才会被接住，
+   * 否则 startAbility 抛错，UI 回落到二维码（用 https applink 会被浏览器吃掉，无法判断）。
+   */
+  static readonly FEISHU_GROUP_URL: string = 'feishu://client/chat/chatter/add_by_link?link_token=eecvd18d-58af-457a-9a29-bbaa46c46a5e&qr_code=true';
   static readonly POLICY_UPDATED_DATE: string = '2026年11月19日';
 }
 

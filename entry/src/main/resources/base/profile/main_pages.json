@@ -12,9 +12,9 @@
     "pages/SubtitlePrefsPage",
     "pages/ShortcutsPage",
     "pages/TmdbConfigPage",
+    "pages/LegalDocPage",
     "pages/AboutPrivacyPage",
     "pages/PrivacyVaultPage",
-    "pages/LegalDocPage",
     "pages/OnlineMediaPage"
   ]
 }

@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import prismNative from 'libprismplayer.so';
 import { AppConstants, BreakpointType } from '../common/Constants';
@@ -9,6 +10,8 @@ import {
   HiddenFolderRule,
   MediaItem,
   MediaSource,
+  PlayerLaunchParams,
+  ProTier,
   RemoteFileEntry,
   SeriesGroup,
   SubtitleStyleValues,
@@ -18,6 +21,8 @@ import {
   VaultEntryKind,
   WatchHistoryRecord
 } from '../common/Types';
+import { CardData, CardSnapshot, CARD_SNAPSHOT_KEY } from './CardSnapshot';
+import { ContinuePayload } from './PlaybackHandoff';
 import { CryptoVault } from './CryptoVault';
 import { DouyinClient, LocalVideoSaveResult } from './DouyinClient';
 import { EmbyClient } from './EmbyClient';
@@ -57,6 +62,7 @@ export class AppStore {
     tmdbApiHost: AppConstants.DEFAULT_TMDB_HOST,
     tmdbImageBase: AppConstants.DEFAULT_TMDB_IMAGE_BASE,
     autoSkipIntroSec: 0,
+    autoSkipOutroSec: 0,
     subtitleFontSizeFp: 20,
     subtitleLanguageMode: 'all',
     subtitleBgEnabled: true,
@@ -77,8 +83,18 @@ export class AppStore {
   @Trace scanStatusText: string = '';
   @Trace proxyPort: number = 0;
   @Trace pendingLaunchItem: MediaItem | null = null;
+  /** 卡片 / 快捷方式 / 分享链接 / 系统菜单唤起播放时，等待 UI 侧接手的请求。 */
+  @Trace pendingPlayerLaunch: PlayerLaunchParams | null = null;
+  @Trace pendingTab: number = -1;
+  private launchHandler: ((params: PlayerLaunchParams) => void) | null = null;
+  private tabHandler: ((index: number) => void) | null = null;
+  /** 当前播放现场，供 UIAbility.onContinue 读取后跨端迁移。 */
+  private livePlayback: ContinuePayload | null = null;
   @Trace currentBreakpoint: BreakpointType = 'sm';
   @Trace isLandscape: boolean = false;
+  /** 窗口逻辑尺寸（vp）。页面据此决定内容宽度上限与分栏，而不是各写一套百分比。 */
+  @Trace windowWidthVp: number = 360;
+  @Trace windowHeightVp: number = 780;
 
   get isPro(): boolean {
     return this.settings.proTier !== 'free';
@@ -107,6 +123,7 @@ export class AppStore {
       tmdbApiHost: this.settings.tmdbApiHost,
       tmdbImageBase: this.settings.tmdbImageBase,
       autoSkipIntroSec: this.settings.autoSkipIntroSec,
+      autoSkipOutroSec: this.settings.autoSkipOutroSec,
       subtitleFontSizeFp: this.settings.subtitleFontSizeFp,
       subtitleLanguageMode: this.settings.subtitleLanguageMode,
       subtitleBgEnabled: this.settings.subtitleBgEnabled,
@@ -167,14 +184,121 @@ export class AppStore {
     this.hiddenFolders = await this.db.listHiddenFolders();
     this.vaultEntries = await this.db.listVaultEntries();
     await this.migrateFolderRulesToVault();
+    await this.refreshCardSnapshot();
   }
 
-  hasVaultPin(): boolean {
+  // ---------------------------------------------------------------- 播放唤起
+
+  /**
+   * UI 层注册「请开始播放」的接手方。冷启动时 AppStore 可能先于页面就绪，
+   * 这里保留待办并在注册瞬间立刻补发，避免卡片/快捷方式点进来没有反应。
+   */
+  registerLaunchHandler(handler: (params: PlayerLaunchParams) => void): void {
+    this.launchHandler = handler;
+    const pending = this.pendingPlayerLaunch;
+    if (pending) {
+      this.pendingPlayerLaunch = null;
+      handler(pending);
+    }
+  }
+
+  registerTabHandler(handler: (index: number) => void): void {
+    this.tabHandler = handler;
+    const pending = this.pendingTab;
+    if (pending >= 0) {
+      this.pendingTab = -1;
+      handler(pending);
+    }
+  }
+
+  requestTab(index: number): void {
+    if (this.tabHandler) {
+      this.tabHandler(index);
+    } else {
+      this.pendingTab = index;
+    }
+  }
+
+  setLivePlayback(payload: ContinuePayload | null): void {
+    this.livePlayback = payload;
+  }
+
+  getLivePlayback(): ContinuePayload | null {
+    return this.livePlayback;
+  }
+
+  private requestPlayerLaunch(params: PlayerLaunchParams): void {
+    if (this.launchHandler) {
+      this.launchHandler(params);
+    } else {
+      this.pendingPlayerLaunch = params;
+    }
+  }
+
+  findMediaItemById(itemId: string): MediaItem | undefined {
+    return this.mediaItems.find(m => m.id === itemId);
+  }
+
+  private launchParamsFor(item: MediaItem, positionMs: number, rate: number): PlayerLaunchParams {
+    const source = this.sources.find(s => s.id === item.sourceId);
+    return { item, source, startPositionMs: positionMs, playbackRate: rate };
+  }
+
+  /** 指定条目 + 进度起播（卡片、快捷方式、App Linking 共用）。 */
+  async requestResumePlayback(itemId: string, positionMs: number): Promise<boolean> {
+    const item = this.findMediaItemById(itemId);
+    if (!item) return false;
+    const hist = this.getHistoryForItem(itemId);
+    const rate = hist && hist.playbackRate > 0 ? hist.playbackRate : 1.0;
+    const startMs = positionMs > 0 ? positionMs : (hist ? hist.positionMs : 0);
+    this.requestPlayerLaunch(this.launchParamsFor(item, startMs, rate));
+    return true;
+  }
+
+  /** 「继续观看」：取卡片的同一条策略，隐私条目永不命中。 */
+  async requestContinueWatching(): Promise<boolean> {
+    const concealed = this.concealedIds();
+    for (let i = 0; i < this.watchHistory.length; i++) {
+      const rec = this.watchHistory[i];
+      if (rec.finished || rec.durationMs <= 0) continue;
+      if (concealed.has(rec.itemId)) continue;
+      return await this.requestResumePlayback(rec.itemId, rec.positionMs);
+    }
+    return false;
+  }
+
+  /** 服务卡片走的隐私判定集合：不看 vaultUnlocked，桌面属于公共区域。 */
+  private concealedIds(): Set<string> {
+    const ids = new Set<string>();
+    for (let i = 0; i < this.mediaItems.length; i++) {
+      const it = this.mediaItems[i];
+      if (this.isPathRuleHidden(it.sourceId, it.remotePath) || this.isContentVaultHidden(it)) {
+        ids.add(it.id);
+      }
+    }
+    return ids;
+  }
+
+  /** 把「继续观看」算好写进 preferences，卡片进程只读这一份。 */
+  async refreshCardSnapshot(): Promise<void> {
+    const data: CardData = CardSnapshot.build(this.watchHistory, this.concealedIds());
+    await this.db.setStringPref(CARD_SNAPSHOT_KEY, CardSnapshot.toJson(data));
+  }
+
+  async getNumberPref(key: string, def: number): Promise<number> {
+    return await this.db.getNumberPref(key, def);
+  }
+
+  async setNumberPref(key: string, value: number): Promise<void> {
+    await this.db.setNumberPref(key, value);
+  }
+
+  hasVaultPattern(): boolean {
     return !!this.settings.vaultPinCipher;
   }
 
-  async setVaultPin(newPin: string): Promise<void> {
-    const clean = newPin.trim();
+  async setVaultPattern(newPattern: string): Promise<void> {
+    const clean = newPattern.trim();
     const cipher = clean ? await CryptoVault.encrypt(clean) : '';
     await this.updateSettings({
       themeMode: this.settings.themeMode,
@@ -186,6 +310,7 @@ export class AppStore {
       tmdbApiHost: this.settings.tmdbApiHost,
       tmdbImageBase: this.settings.tmdbImageBase,
       autoSkipIntroSec: this.settings.autoSkipIntroSec,
+      autoSkipOutroSec: this.settings.autoSkipOutroSec,
       subtitleFontSizeFp: this.settings.subtitleFontSizeFp,
       subtitleLanguageMode: this.settings.subtitleLanguageMode,
       subtitleBgEnabled: this.settings.subtitleBgEnabled,
@@ -198,14 +323,14 @@ export class AppStore {
     });
   }
 
-  async verifyVaultPin(candidate: string): Promise<boolean> {
+  async verifyVaultPattern(candidate: string): Promise<boolean> {
     if (!this.settings.vaultPinCipher) return false;
     const stored = await CryptoVault.decrypt(this.settings.vaultPinCipher);
     return stored.length > 0 && stored === candidate.trim();
   }
 
-  async unlockVault(pin: string): Promise<boolean> {
-    const ok = await this.verifyVaultPin(pin);
+  async unlockVault(pattern: string): Promise<boolean> {
+    const ok = await this.verifyVaultPattern(pattern);
     if (ok) {
       this.vaultUnlocked = true;
     }
@@ -322,6 +447,7 @@ export class AppStore {
     }
     await this.db.deleteVaultEntry(entry.id);
     this.vaultEntries = await this.db.listVaultEntries();
+    await this.refreshCardSnapshot();
   }
 
   /** 旧文件夹规则一次性迁移为 folder 保险库条目（幂等）。 */
@@ -396,6 +522,59 @@ export class AppStore {
     await this.db.saveSettings(next);
   }
 
+  /** 写入买断等级（IAP 支付成功或恢复购买后调用）。 */
+  async applyProTier(tier: ProTier): Promise<void> {
+    if (this.settings.proTier === tier) return;
+    const s = this.settings;
+    await this.updateSettings({
+      themeMode: s.themeMode,
+      cacheBudgetMb: s.cacheBudgetMb,
+      preferHardwareDecode: s.preferHardwareDecode,
+      hardwareSupportedFormats: s.hardwareSupportedFormats,
+      tmdbApiKey: s.tmdbApiKey,
+      tmdbApiHost: s.tmdbApiHost,
+      tmdbImageBase: s.tmdbImageBase,
+      autoSkipIntroSec: s.autoSkipIntroSec,
+      autoSkipOutroSec: s.autoSkipOutroSec,
+      subtitleFontSizeFp: s.subtitleFontSizeFp,
+      subtitleLanguageMode: s.subtitleLanguageMode,
+      subtitleBgEnabled: s.subtitleBgEnabled,
+      subtitleBgOpacityPercent: s.subtitleBgOpacityPercent,
+      subtitleVerticalOffsetVp: s.subtitleVerticalOffsetVp,
+      burnSubMaskDefault: s.burnSubMaskDefault,
+      subdlApiKey: s.subdlApiKey,
+      proTier: tier,
+      privacyAccepted: s.privacyAccepted,
+      vaultPinCipher: s.vaultPinCipher || ''
+    });
+  }
+
+  /** 跳过片头/片尾的秒数（0 = 关闭），全局默认，作用于剧集。 */
+  async saveSkipDefaults(introSec: number, outroSec: number): Promise<void> {
+    const s = this.settings;
+    await this.updateSettings({
+      themeMode: s.themeMode,
+      cacheBudgetMb: s.cacheBudgetMb,
+      preferHardwareDecode: s.preferHardwareDecode,
+      hardwareSupportedFormats: s.hardwareSupportedFormats,
+      tmdbApiKey: s.tmdbApiKey,
+      tmdbApiHost: s.tmdbApiHost,
+      tmdbImageBase: s.tmdbImageBase,
+      autoSkipIntroSec: introSec,
+      autoSkipOutroSec: outroSec,
+      subtitleFontSizeFp: s.subtitleFontSizeFp,
+      subtitleLanguageMode: s.subtitleLanguageMode,
+      subtitleBgEnabled: s.subtitleBgEnabled,
+      subtitleBgOpacityPercent: s.subtitleBgOpacityPercent,
+      subtitleVerticalOffsetVp: s.subtitleVerticalOffsetVp,
+      burnSubMaskDefault: s.burnSubMaskDefault,
+      subdlApiKey: s.subdlApiKey,
+      proTier: s.proTier,
+      privacyAccepted: s.privacyAccepted,
+      vaultPinCipher: s.vaultPinCipher
+    });
+  }
+
   /**
    * Centralized write path for subtitle appearance defaults.
    * Keeps the player style screen and the settings page on one source of truth.
@@ -412,6 +591,7 @@ export class AppStore {
       tmdbApiHost: s.tmdbApiHost,
       tmdbImageBase: s.tmdbImageBase,
       autoSkipIntroSec: s.autoSkipIntroSec,
+      autoSkipOutroSec: s.autoSkipOutroSec,
       subtitleFontSizeFp: style.fontSizeFp,
       subtitleLanguageMode: style.languageMode,
       subtitleBgEnabled: style.bgEnabled,
@@ -436,6 +616,7 @@ export class AppStore {
       tmdbApiHost: s.tmdbApiHost,
       tmdbImageBase: s.tmdbImageBase,
       autoSkipIntroSec: s.autoSkipIntroSec,
+      autoSkipOutroSec: s.autoSkipOutroSec,
       subtitleFontSizeFp: s.subtitleFontSizeFp,
       subtitleLanguageMode: s.subtitleLanguageMode,
       subtitleBgEnabled: s.subtitleBgEnabled,
@@ -460,6 +641,7 @@ export class AppStore {
       tmdbApiHost: s.tmdbApiHost,
       tmdbImageBase: s.tmdbImageBase,
       autoSkipIntroSec: s.autoSkipIntroSec,
+      autoSkipOutroSec: s.autoSkipOutroSec,
       subtitleFontSizeFp: s.subtitleFontSizeFp,
       subtitleLanguageMode: s.subtitleLanguageMode,
       subtitleBgEnabled: s.subtitleBgEnabled,
@@ -740,8 +922,8 @@ export class AppStore {
    * 播放时惰性补关联：旧条目（sidecar 匹配上线前入库）字幕字段为空时，
    * 列出视频同目录、按现有规则匹配 sidecar 字幕，写回数据库并同步内存缓存。
    */
-  async probeSubtitlesForItem(item: MediaItem, source?: MediaSource): Promise<SubtitleTrackOption[]> {
-    if (item.subtitleTracks && item.subtitleTracks.length > 0) {
+  async probeSubtitlesForItem(item: MediaItem, source?: MediaSource, force: boolean = false): Promise<SubtitleTrackOption[]> {
+    if (!force && item.subtitleTracks && item.subtitleTracks.length > 0) {
       return item.subtitleTracks;
     }
     if (!source || !item.remotePath || item.remotePath.startsWith('/douyin/')) {
@@ -749,6 +931,23 @@ export class AppStore {
     }
     if (source.type === 'youtube' || source.type === 'douyin' || source.type === 'iptv' || source.type === 'local') {
       return [];
+    }
+    if (source.type === 'plex') {
+      try {
+        const tracks = await PlexClient.probeSubtitleTracks(source, item);
+        hilog.info(0x0001, 'PrismPlex', 'probe id=%{public}s tracks=%{public}d path=%{public}s', item.id, tracks.length, item.remotePath);
+        if (tracks.length === 0) return [];
+        await this.db.updateMediaItemSubtitles(item.id, tracks[0].url, tracks);
+        const idx = this.mediaItems.findIndex(m => m.id === item.id);
+        if (idx >= 0) {
+          this.mediaItems[idx].subtitleUrl = tracks[0].url;
+          this.mediaItems[idx].subtitleTracks = tracks;
+        }
+        return tracks;
+      } catch (e) {
+        hilog.warn(0x0001, 'PrismPlex', 'probe failed: %{public}s', e instanceof Error ? e.message : String(e));
+        return [];
+      }
     }
     try {
       const slash = item.remotePath.lastIndexOf('/');
@@ -920,16 +1119,19 @@ export class AppStore {
   async saveWatchProgress(record: WatchHistoryRecord): Promise<void> {
     await this.db.saveWatchHistory(record);
     this.watchHistory = await this.db.listWatchHistory();
+    await this.refreshCardSnapshot();
   }
 
   async deleteWatchHistoryItem(itemId: string): Promise<void> {
     await this.db.deleteWatchHistoryItem(itemId);
     this.watchHistory = this.watchHistory.filter(h => h.itemId !== itemId);
+    await this.refreshCardSnapshot();
   }
 
   async clearWatchHistory(): Promise<void> {
     await this.db.clearWatchHistory();
     this.watchHistory = [];
+    await this.refreshCardSnapshot();
   }
 
   getHistoryForItem(itemId: string): WatchHistoryRecord | undefined {

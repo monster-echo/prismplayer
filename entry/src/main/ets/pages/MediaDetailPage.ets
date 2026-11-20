@@ -1,4 +1,6 @@
+import { BreakpointType } from '../common/Constants';
 import { Formatters } from '../common/Formatters';
+import { Layout } from '../common/Layout';
 import { MediaArtwork } from '../common/MediaArtwork';
 import {
   MediaDetailParams,
@@ -119,9 +121,34 @@ struct MediaDetailPage {
     .border({ width: 0.6, color: $r('app.color.fill_strong') })
   }
 
+  private bp(): BreakpointType {
+    return this.store.currentBreakpoint;
+  }
+
+  /** 详情页在宽窗里收窄并居中，避免简介一行拉出 2000vp。 */
+  private contentWidth(): number {
+    return Layout.contentWidth(this.store.windowWidthVp, this.bp(), 0);
+  }
+
+  private heroHeight(): number {
+    if (this.bp() === 'sm') return 250;
+    if (this.bp() === 'md') return 300;
+    return 352;
+  }
+
+  private posterWidth(): number {
+    return this.bp() === 'sm' ? 96 : 148;
+  }
+
+  private posterHeight(): number {
+    return this.bp() === 'sm' ? 140 : 216;
+  }
+
   build() {
+    Row() {
     Column() {
       NavHeaderBar({
+        inset: 0,
         title: this.getTitle(),
         subtitle: this.series ? `剧集 · 共 ${this.series.episodes.length} 集` : (this.movie?.qualityTag || '高清片源'),
         rightLabel: '刮削',
@@ -144,14 +171,14 @@ struct MediaDetailPage {
             if (this.getBackdrop() && !this.backdropFailed) {
               Image(MediaArtwork.resolve(this.getBackdrop()))
                 .width('100%')
-                .height(250)
+                .height(this.heroHeight())
                 .objectFit(ImageFit.Cover)
                 .onError(() => { this.backdropFailed = true; })
             } else {
               Stack({ alignContent: Alignment.TopEnd }) {
                 Column()
                   .width('100%')
-                  .height(250)
+                  .height(this.heroHeight())
                   .linearGradient({
                     angle: 135,
                     colors: [
@@ -166,12 +193,12 @@ struct MediaDetailPage {
                   .margin({ top: 10, right: 6 })
               }
               .width('100%')
-              .height(250)
+              .height(this.heroHeight())
             }
 
             Column()
               .width('100%')
-              .height(250)
+              .height(this.heroHeight())
               .linearGradient({
                 angle: 180,
                 colors: [['#1A0A0B0F', 0], ['#990A0B0F', 0.52], ['#FF0A0B0F', 1]]
@@ -180,8 +207,8 @@ struct MediaDetailPage {
             Row({ space: 16 }) {
               if (this.getPoster() && !this.posterFailed) {
                 Image(MediaArtwork.resolve(this.getPoster()))
-                  .width(96)
-                  .height(140)
+                  .width(this.posterWidth())
+                  .height(this.posterHeight())
                   .objectFit(ImageFit.Cover)
                   .borderRadius(12)
                   .border({ width: 1, color: '#44FFFFFF' })
@@ -200,8 +227,8 @@ struct MediaDetailPage {
                     .textAlign(TextAlign.Center)
                     .padding({ left: 6, right: 6 })
                 }
-                .width(96)
-                .height(140)
+                .width(this.posterWidth())
+                .height(this.posterHeight())
                 .justifyContent(FlexAlign.Center)
                 .linearGradient({
                   angle: 150,
@@ -217,7 +244,7 @@ struct MediaDetailPage {
 
               Column({ space: 7 }) {
                 Text(this.getTitle())
-                  .fontSize(22)
+                  .fontSize(this.bp() === 'sm' ? 22 : (this.bp() === 'xl' ? 32 : 28))
                   .fontWeight(FontWeight.Bold)
                   .fontColor(Color.White)
                   .maxLines(2)
@@ -262,7 +289,7 @@ struct MediaDetailPage {
               .alignItems(HorizontalAlign.Start)
             }
             .width('100%')
-            .padding({ left: 20, right: 20, bottom: 8 })
+            .padding({ left: 20, right: 20, bottom: 10 })
             .alignItems(VerticalAlign.Bottom)
           }
           .width('100%')
@@ -294,12 +321,16 @@ struct MediaDetailPage {
                       .fontColor([Color.White])
                     Text(
                       this.getPrimaryHistory() && this.getPrimaryHistory()!.positionMs > 5000 && !this.getPrimaryHistory()!.finished
-                        ? `继续播放 · ${Formatters.formatDuration(this.getPrimaryHistory()!.positionMs)}`
+                        ? (this.bp() === 'sm'
+                          ? '继续播放'
+                          : `继续播放 · ${Formatters.formatDuration(this.getPrimaryHistory()!.positionMs)}`)
                         : (this.series ? '播放剧集' : '立即播放')
                     )
                       .fontSize(15)
                       .fontWeight(FontWeight.Bold)
                       .fontColor(Color.White)
+                      .maxLines(1)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis })
                   }
                 }
                 .layoutWeight(1)
@@ -365,6 +396,8 @@ struct MediaDetailPage {
                 }
               }
               .width('100%')
+              .constraintSize({ maxWidth: 560 })
+              .alignSelf(ItemAlign.Start)
             }
 
             // Synopsis
@@ -378,11 +411,12 @@ struct MediaDetailPage {
                 '本地 NFO 与文件名解析已就绪。可在「设置 → TMDB 海报墙刮削」填入 API Key 自动拉取完整中文剧情简介、演职表与 4K 剧照。'
               )
                 .fontSize(13)
-                .lineHeight(22)
+                .lineHeight(this.bp() === 'sm' ? 22 : 24)
                 .fontColor($r('app.color.text_secondary'))
                 .width('100%')
             }
             .width('100%')
+            .constraintSize({ maxWidth: 780 })
             .alignItems(HorizontalAlign.Start)
 
             // Collapsible File & Source Technical Specification Card
@@ -503,49 +537,50 @@ struct MediaDetailPage {
               .alignItems(HorizontalAlign.Start)
             }
           }
-          .padding({ left: 20, right: 20, bottom: 36 })
+          .padding({ left: 0, right: 0, bottom: 36 })
           .width('100%')
         }
         .width('100%')
       }
       .layoutWeight(1)
       .width('100%')
-      .align(Alignment.TopStart)
+      .align(Alignment.Top)
       .scrollBar(BarState.Off)
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.bg_primary'))
+    .padding({
+      left: Layout.gutter(this.bp()),
+      right: Layout.gutter(this.bp()),
+      top: 8
+    })
+    .constraintSize({ maxWidth: Layout.detailMax(this.bp()) + Layout.gutter(this.bp()) * 2 })
     .bindSheet(this.showScrapeSheet, this.scrapeSheetBuilder(), {
-      height: 620,
+      height: this.bp() === 'sm'
+        ? Math.round(this.store.windowHeightVp * 0.58)
+        : 480,
       dragBar: false,
+      title: { title: 'TMDB 刮削' },
+      preferType: this.bp() === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      width: this.bp() === 'sm' ? undefined : this.scrapeSheetWidth(),
       backgroundColor: $r('app.color.bg_elevated'),
       onDisappear: () => { this.showScrapeSheet = false; }
     })
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor($r('app.color.bg_primary'))
+  }
+
+  /** 窗口变窄/变矮时不让弹窗超出可视区域（md 窗口可能只比 640 略宽） */
+  private scrapeSheetWidth(): number {
+    return Math.min(640, Math.max(420, this.store.windowWidthVp - 80));
   }
 
   @Builder
   scrapeSheetBuilder() {
     Column({ space: 12 }) {
-      Row({ space: 8 }) {
-        Image($r('app.media.ic_tmdb_clapboard')).width(20).height(20)
-        Text('TMDB 刮削')
-          .fontSize(16)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
-        Blank()
-        Button({ type: ButtonType.Circle }) {
-          SymbolGlyph($r('sys.symbol.xmark'))
-            .fontSize(13)
-            .fontColor([$r('app.color.text_secondary')])
-        }
-        .width(30)
-        .height(30)
-        .backgroundColor($r('app.color.fill_subtle'))
-        .onClick(() => { this.showScrapeSheet = false; })
-      }
-      .width('100%')
-
       Row({ space: 8 }) {
         TextInput({ text: this.scrapeQuery, placeholder: '输入准确的中文/英文片名或年份...' })
           .layoutWeight(1)
@@ -702,10 +737,10 @@ struct MediaDetailPage {
 
 
   private async requestVaultHide(target: MediaItem): Promise<void> {
-    if (!this.store.hasVaultPin()) {
+    if (!this.store.hasVaultPattern()) {
       this.getUIContext().showAlertDialog({
-        title: '先设置保险箱密码',
-        message: '隐藏到保险库前需要先设置访问密码。将跳转到「隐私保险库」页设置，设置后即可在详情页或片源目录隐藏内容。',
+        title: '先设置保险箱图案',
+        message: '设置解锁图案后即可隐藏内容。',
         primaryButton: { value: '取消', action: () => {} },
         secondaryButton: {
           value: '去设置',
@@ -718,8 +753,8 @@ struct MediaDetailPage {
     this.getUIContext().showAlertDialog({
       title: isSeries ? `隐藏剧集「${target.seriesTitle || target.title}」？` : `隐藏「${target.title}」？`,
       message: isSeries
-        ? '该剧集的全部剧集（含其他目录与季）将从影库、搜索与历史中移出，由保险箱密码保护；原文件不会被修改。'
-        : '该影片将从影库、搜索与历史中移出，由保险箱密码保护；原文件不会被修改。',
+        ? '隐藏后将从影库、搜索与历史移出，原文件不变。'
+        : '隐藏后将从影库、搜索与历史移出，原文件不变。',
       primaryButton: { value: '取消', action: () => {} },
       secondaryButton: {
         value: '隐藏到保险库',

@@ -1,0 +1,36 @@
+{
+  "shortcuts": [
+    {
+      "shortcutId": "continue",
+      "label": "$string:shortcut_continue",
+      "icon": "$media:foreground",
+      "visible": true,
+      "wants": [
+        {
+          "bundleName": "tech.zhongbei.prismplayer",
+          "moduleName": "entry",
+          "abilityName": "EntryAbility",
+          "parameters": {
+            "menuCode": "continue"
+          }
+        }
+      ]
+    },
+    {
+      "shortcutId": "library",
+      "label": "$string:shortcut_library",
+      "icon": "$media:foreground",
+      "visible": true,
+      "wants": [
+        {
+          "bundleName": "tech.zhongbei.prismplayer",
+          "moduleName": "entry",
+          "abilityName": "EntryAbility",
+          "parameters": {
+            "menuCode": "library"
+          }
+        }
+      ]
+    }
+  ]
+}

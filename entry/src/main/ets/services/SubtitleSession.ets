@@ -169,8 +169,9 @@ export class SubtitleSession {
     if (!item) return;
 
     // Older library entries may not carry sidecar subtitle metadata yet: probe lazily and write back.
-    if (!(item.subtitleTracks && item.subtitleTracks.length > 0)) {
-      const probed = await this.store.probeSubtitlesForItem(item, this.mediaSource);
+    const forcePlexProbe = this.mediaSource?.type === 'plex';
+    if (forcePlexProbe || !(item.subtitleTracks && item.subtitleTracks.length > 0)) {
+      const probed = await this.store.probeSubtitlesForItem(item, this.mediaSource, forcePlexProbe);
       if (probed.length > 0) {
         item.subtitleTracks = probed;
       }
@@ -179,16 +180,34 @@ export class SubtitleSession {
 
     if (item.subtitleTracks && item.subtitleTracks.length > 0) {
       const tracks = item.subtitleTracks;
+      let loadedSidecars = 0;
       for (let i = 0; i < tracks.length; i++) {
         const t = tracks[i];
         if (!t.url) continue;
         try {
           const content = await RemoteSourceClient.fetchText(t.url, this.mediaSource);
           if (this.mediaItem !== item) return;
-          this.addExternalTrack(SubtitleEngine.parse(content, t.label, t.url));
-        } catch (_e) {
-          // A single remote sidecar failing must not block the other tracks.
+          const parsed = SubtitleEngine.parse(content, t.label, t.url);
+          hilog.info(0x0001, 'PrismSub', 'sidecar loaded label=%{public}s cues=%{public}d len=%{public}d', t.label, parsed.cues.length, content.length);
+          if (parsed.cues.length > 0) {
+            this.addExternalTrack(parsed, loadedSidecars === 0);
+            loadedSidecars++;
+          }
+        } catch (e) {
+          hilog.warn(0x0001, 'PrismSub', 'sidecar failed label=%{public}s path=%{public}s err=%{public}s',
+            t.label, t.url.split('?')[0], e instanceof Error ? e.message : String(e));
         }
+      }
+      if (this.externalTracks.length > 0) {
+        let chosen = this.externalTracks[0];
+        for (let i = 0; i < this.externalTracks.length; i++) {
+          if (!/SDH|CC|forced/i.test(this.externalTracks[i].label)) {
+            chosen = this.externalTracks[i];
+            break;
+          }
+        }
+        this.enabledTrackIds = [chosen.id];
+        this.enabled = true;
       }
       return;
     }
@@ -220,7 +239,7 @@ export class SubtitleSession {
     }
   }
 
-  addExternalTrack(track: ExternalSubtitleTrack): void {
+  addExternalTrack(track: ExternalSubtitleTrack, select: boolean = true): void {
     if (this.externalTracks.some(t => t.id === track.id)) return;
     const next = this.externalTracks.slice();
     next.push(track);
@@ -427,7 +446,7 @@ export class SubtitleSession {
         const c = merged[j];
         const cachedZh = SubtitleService.getCachedTranslation(c.text);
         if (!cachedZh) {
-          SubtitleService.translateToChinese(c.text);
+          SubtitleService.requestTranslation(c.text);
           translated.push(c);
         } else {
           translated.push({
@@ -521,7 +540,7 @@ export class SubtitleSession {
     const season = this.resolvedSeasonNo();
     const episode = this.resolvedEpisodeNo();
     if (season > 0 && episode > 0) {
-      return `S${this.pad2(season)}E${this.pad2(episode)} · 第 ${episode} 集`;
+      return `第 ${season} 季 · 第 ${episode} 集`;
     }
     const parsed = item.fileName ? Formatters.parseMediaFilename(item.fileName) : undefined;
     const year = parsed && parsed.year > 0 ? parsed.year : item.year;
@@ -535,10 +554,6 @@ export class SubtitleSession {
     return simplified;
   }
 
-  resetOnlineQueryToMedia(): void {
-    this.onlineQuery = this.buildMediaSearchQuery();
-  }
-
   setLanguageFilter(code: string): void {
     this.languageFilter = code;
   }
@@ -550,6 +565,12 @@ export class SubtitleSession {
 
   private pad2(value: number): string {
     return value < 10 ? `0${value}` : `${value}`;
+  }
+
+  /** True when an episode search produced results but none explicitly match the current episode. */
+  private hasOnlyFuzzyResults(results: OnlineSubtitleResult[], season: number, episode: number): boolean {
+    if (season <= 0 || episode <= 0 || results.length === 0) return false;
+    return !results.some((r: OnlineSubtitleResult) => SubtitleService.isExactEpisodeResult(r.title, season, episode));
   }
 
   async searchOnline(query: string): Promise<number> {
@@ -586,7 +607,7 @@ export class SubtitleSession {
           );
         }
       }
-      // Last resort: title-only search; mark results as non-exact so the UI can warn.
+      // Last resort: title-only search; exact-match presence is evaluated below.
       if (results.length === 0 && season > 0 && episode > 0) {
         results = await SubtitleService.searchAllSubtitles(
           effective,
@@ -596,8 +617,8 @@ export class SubtitleSession {
           0,
           0
         );
-        this.onlineFuzzyFallback = results.length > 0;
       }
+      this.onlineFuzzyFallback = this.hasOnlyFuzzyResults(results, season, episode);
       this.onlineQuery = clean;
       this.onlineResults = results;
       return results.length;
@@ -654,8 +675,8 @@ export class SubtitleSession {
           0,
           0
         );
-        this.onlineFuzzyFallback = results.length > 0;
       }
+      this.onlineFuzzyFallback = this.hasOnlyFuzzyResults(results, season, episode);
       this.onlineQuery = query;
       this.onlineResults = results;
       if (results.length === 0) return null;
@@ -668,11 +689,25 @@ export class SubtitleSession {
 
   async mountOnlineSubtitle(result: OnlineSubtitleResult): Promise<ExternalSubtitleTrack> {
     const cacheDir = this.host ? this.host.getCacheDir() : '';
-    const text = await SubtitleService.downloadSubtitleText(result.downloadUrl, cacheDir);
-    const track = SubtitleEngine.parse(text, `${result.langLabel} · ${result.title}`, result.downloadUrl);
-    this.addExternalTrack(track);
-    this.enabled = true;
-    return track;
+    let preferred = '';
+    if (result.language === 'zh' || result.language === 'zh-en') preferred = 'gb18030';
+    else if (result.language === 'en' || result.language === 'es' || result.language === 'fr'
+      || result.language === 'de' || result.language === 'it' || result.language === 'pt') preferred = 'windows-1252';
+    try {
+      const text = await SubtitleService.downloadSubtitleText(result.downloadUrl, cacheDir, preferred);
+      const track = SubtitleEngine.parse(text, `${result.langLabel} · ${result.title}`, result.downloadUrl);
+      if (track.cues.length === 0) {
+        throw new Error(`这条字幕没有可用文本（${text.length} 字符），请换一条结果`);
+      }
+      hilog.info(0x0001, 'PrismSub', 'online mounted cues=%{public}d textLen=%{public}d', track.cues.length, text.length);
+      this.addExternalTrack(track);
+      this.enabled = true;
+      return track;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      hilog.error(0x0001, 'PrismSub', 'online mount failed: %{public}s', message);
+      throw new Error(message);
+    }
   }
 
   // ---------------------------------------------------------------------------

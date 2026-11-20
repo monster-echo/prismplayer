@@ -1,4 +1,5 @@
 import { MediaArtwork } from '../common/MediaArtwork';
+import { PageShell } from '../components/PageShell';
 import {
   MediaSource,
   MediaSourceType,
@@ -9,7 +10,6 @@ import {
 } from '../common/Types';
 import { NavHeaderBar } from '../components/NavHeaderBar';
 import { AppStore } from '../services/AppStore';
-import { DouyinClient } from '../services/DouyinClient';
 import { RemoteSourceClient } from '../services/RemoteSourceClient';
 import { WebDavTestResult } from '../services/WebDavClient';
 
@@ -26,11 +26,9 @@ interface NasDevicePreset {
 }
 
 const NAS_DEVICE_PRESETS: NasDevicePreset[] = [
-  { label: '抖音分享视频', tag: '无水印/保存', type: 'douyin', url: DouyinClient.DEMO_SHARE_TEXT, rootPath: '/', alist302: false, insecureTls: true },
   { label: 'AWS S3 存储', tag: 'SigV4直连', type: 's3', url: 'https://s3.us-east-1.amazonaws.com/my-bucket', rootPath: '/', alist302: false, insecureTls: false, region: 'us-east-1' },
   { label: 'Cloudflare R2', tag: '零出流量', type: 's3', url: 'https://account-id.r2.cloudflarestorage.com/video', rootPath: '/', alist302: false, insecureTls: false, region: 'auto' },
   { label: 'MinIO 自建 S3', tag: '私有对象云', type: 's3', url: 'http://192.168.1.10:9000/movies', rootPath: '/', alist302: false, insecureTls: true, region: 'us-east-1' },
-  { label: 'YouTube 频道', tag: '订阅/流播', type: 'youtube', url: 'https://www.youtube.com/@TED', rootPath: '/', alist302: false, insecureTls: false },
   { label: 'IPTV / M3U', tag: '直播/HTTP', type: 'iptv', url: 'https://iptv-org.github.io/iptv/countries/cn.m3u', rootPath: '/', alist302: false, insecureTls: true },
   { label: 'Emby / Jellyfin', tag: '海报/硬解', type: 'emby', url: 'http://192.168.1.10:8096', rootPath: '/', alist302: false, insecureTls: true },
   { label: 'SMB 共享', tag: 'SMB2/3', type: 'smb', url: 'smb://192.168.1.10/homes', rootPath: '/', alist302: false, insecureTls: false },
@@ -128,9 +126,9 @@ struct SourceFormPage {
   }
 
   private urlFieldTitle(): string {
-    if (this.sourceType === 'douyin') return '抖音分享链接或口令（直接粘贴抖音复制的全文）';
+    if (this.sourceType === 'douyin') return '视频链接';
     if (this.sourceType === 's3') return 'S3 Endpoint 与存储桶（如 https://s3.us-east-1.amazonaws.com/bucket）';
-    if (this.sourceType === 'youtube') return 'YouTube 链接（@频道 / 播放列表 / 单视频 / Piped 实例）';
+    if (this.sourceType === 'youtube') return '视频链接';
     if (this.sourceType === 'iptv') return 'M3U 订阅链接 / HTTP 目录 / 视频直链 URL';
     if (this.sourceType === 'emby') return 'Emby / Jellyfin 地址（如 http://192.168.1.10:8096）';
     if (this.sourceType === 'smb') return 'SMB 服务器与共享名（smb://IP/共享名）';
@@ -139,9 +137,9 @@ struct SourceFormPage {
   }
 
   private urlPlaceholder(): string {
-    if (this.sourceType === 'douyin') return DouyinClient.DEMO_SHARE_TEXT;
+    if (this.sourceType === 'douyin') return 'https://...';
     if (this.sourceType === 's3') return 'https://s3.us-east-1.amazonaws.com/my-bucket';
-    if (this.sourceType === 'youtube') return 'https://www.youtube.com/@TED';
+    if (this.sourceType === 'youtube') return 'https://...';
     if (this.sourceType === 'iptv') return 'https://example.com/channels.m3u';
     if (this.sourceType === 'emby') return 'http://192.168.1.10:8096';
     if (this.sourceType === 'smb') return 'smb://192.168.1.10/homes';
@@ -161,8 +159,8 @@ struct SourceFormPage {
       'plex': '正在验证 Plex API 与媒体分区...',
       'emby': '正在验证 Emby / Jellyfin 会话...',
       's3': '正在生成 SigV4 签名并请求存储桶...',
-      'youtube': '正在探测 YouTube 频道 / 视频列表...',
-      'douyin': '正在解析抖音分享口令与无水印视频流...',
+      'youtube': '正在解析视频链接...',
+      'douyin': '正在解析视频链接...',
       'iptv': '正在解析 M3U / 流媒体响应...'
     };
     this.testMessage = statusMap[this.sourceType] || '正在执行 WebDAV PROPFIND 握手...';
@@ -188,368 +186,378 @@ struct SourceFormPage {
     Column() {
       NavHeaderBar({
         title: this.editingSource ? '编辑片源配置' : '连接云存储 / 在线 / NAS 片源',
-        subtitle: 'S3 · YouTube · IPTV · Emby · SMB · Plex · WebDAV',
+        subtitle: 'S3 · IPTV · Emby · SMB · Plex · WebDAV',
         onBack: () => this.getUIContext().getRouter().back()
       })
 
-      Scroll() {
-        Column({ space: 16 }) {
-          if (!this.editingSource) {
-            Column({ space: 10 }) {
-              Text('一键片源模板')
-                .fontSize(13)
-                .fontWeight(FontWeight.Bold)
-                .fontColor($r('app.color.text_secondary'))
+      Stack() {
+        PageShell({ maxWidth: 760 }) {
+          Column() {
 
-              Scroll() {
-                Row({ space: 10 }) {
-                  ForEach(NAS_DEVICE_PRESETS, (preset: NasDevicePreset) => {
-                    Column({ space: 6 }) {
-                      Image(MediaArtwork.presetIcon(preset.label))
-                        .width(28)
-                        .height(28)
-                      Text(preset.label)
-                        .fontSize(12)
-                        .fontWeight(FontWeight.Medium)
-                        .fontColor($r('app.color.text_primary'))
-                        .maxLines(1)
-                      Text(preset.tag)
-                        .fontSize(10)
-                        .fontColor($r('app.color.accent_cyan'))
+            Scroll() {
+              Column({ space: 16 }) {
+                if (!this.editingSource) {
+                  Column({ space: 10 }) {
+                    Text('一键片源模板')
+                    .fontSize(13)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor($r('app.color.text_secondary'))
+
+                    Scroll() {
+                      Row({ space: 10 }) {
+                        ForEach(NAS_DEVICE_PRESETS, (preset: NasDevicePreset) => {
+                          Column({ space: 6 }) {
+                            Image(MediaArtwork.presetIcon(preset.label))
+                            .width(28)
+                            .height(28)
+                            Text(preset.label)
+                            .fontSize(12)
+                            .fontWeight(FontWeight.Medium)
+                            .fontColor($r('app.color.text_primary'))
+                            .maxLines(1)
+                            Text(preset.tag)
+                            .fontSize(10)
+                            .fontColor($r('app.color.accent_cyan'))
+                          }
+                          .width(106)
+                          .padding({ top: 12, bottom: 10, left: 8, right: 8 })
+                          .borderRadius(12)
+                          .backgroundColor($r('app.color.bg_elevated'))
+                          .border({ width: 0.8, color: $r('app.color.fill_strong') })
+                          .onClick(() => {
+                            this.name = preset.label;
+                            this.sourceType = preset.type;
+                            this.baseUrl = preset.url;
+                            this.rootPath = preset.rootPath;
+                            this.cacheAlist302 = preset.alist302;
+                            this.allowInsecureTls = preset.insecureTls;
+                            if (preset.region) this.s3Region = preset.region;
+                            if (preset.mirrorUrl !== undefined) this.ytMirrorUrl = preset.mirrorUrl;
+                          })
+                        }, (p: NasDevicePreset) => p.label)
+                      }
                     }
-                    .width(106)
-                    .padding({ top: 12, bottom: 10, left: 8, right: 8 })
-                    .borderRadius(12)
-                    .backgroundColor($r('app.color.bg_elevated'))
-                    .border({ width: 0.8, color: $r('app.color.fill_strong') })
-                    .onClick(() => {
-                      this.name = preset.label;
-                      this.sourceType = preset.type;
-                      this.baseUrl = preset.url;
-                      this.rootPath = preset.rootPath;
-                      this.cacheAlist302 = preset.alist302;
-                      this.allowInsecureTls = preset.insecureTls;
-                      if (preset.region) this.s3Region = preset.region;
-                      if (preset.mirrorUrl !== undefined) this.ytMirrorUrl = preset.mirrorUrl;
-                    })
-                  }, (p: NasDevicePreset) => p.label)
+                    .scrollable(ScrollDirection.Horizontal)
+                    .align(Alignment.TopStart)
+                    .scrollBar(BarState.Off)
+                  }.width('100%').alignItems(HorizontalAlign.Start)
                 }
-              }
-              .scrollable(ScrollDirection.Horizontal)
-              .align(Alignment.TopStart)
-              .scrollBar(BarState.Off)
-            }.width('100%').alignItems(HorizontalAlign.Start)
-          }
 
-          // Compact 2-row Protocol Selector
-          Column({ space: 8 }) {
-            Text('片源协议模式')
-              .fontSize(13)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_secondary'))
+                // Compact 2-row Protocol Selector
+                Column({ space: 8 }) {
+                  Text('片源协议模式')
+                  .fontSize(13)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor($r('app.color.text_secondary'))
 
-            Row({ space: 6 }) {
-              this.protocolChip('抖音视频', 'douyin', $r('app.media.ic_protocol_douyin'))
-              this.protocolChip('S3 云存储', 's3', $r('app.media.ic_protocol_s3'))
-              this.protocolChip('YouTube', 'youtube', $r('app.media.ic_protocol_youtube'))
-              this.protocolChip('IPTV/流', 'iptv', $r('app.media.ic_protocol_iptv'))
-            }.width('100%')
+                  Row({ space: 6 }) {
+                    this.protocolChip('S3 云存储', 's3', $r('app.media.ic_protocol_s3'))
+                    this.protocolChip('IPTV/流', 'iptv', $r('app.media.ic_protocol_iptv'))
+                  }.width('100%')
 
-            Row({ space: 6 }) {
-              this.protocolChip('SMB 共享', 'smb', $r('app.media.ic_protocol_smb'))
-              this.protocolChip('Plex', 'plex', $r('app.media.ic_protocol_plex'))
-              this.protocolChip('Emby', 'emby', $r('app.media.ic_protocol_emby'))
-              this.protocolChip('WebDAV', 'webdav', $r('app.media.ic_protocol_webdav'))
-              this.protocolChip('Alist', 'alist', $r('app.media.ic_cloud_alist'))
-            }.width('100%')
-          }.width('100%').alignItems(HorizontalAlign.Start)
+                  Row({ space: 6 }) {
+                    this.protocolChip('SMB 共享', 'smb', $r('app.media.ic_protocol_smb'))
+                    this.protocolChip('Plex', 'plex', $r('app.media.ic_protocol_plex'))
+                    this.protocolChip('Emby', 'emby', $r('app.media.ic_protocol_emby'))
+                    this.protocolChip('WebDAV', 'webdav', $r('app.media.ic_protocol_webdav'))
+                    this.protocolChip('Alist', 'alist', $r('app.media.ic_cloud_alist'))
+                  }.width('100%')
+                }.width('100%').alignItems(HorizontalAlign.Start)
 
-          // Core Connection Card
-          Column({ space: 12 }) {
-            Text('连接与地址')
-              .fontSize(13)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_secondary'))
+                // Core Connection Card
+                Column({ space: 12 }) {
+                  Text('连接与地址')
+                  .fontSize(13)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor($r('app.color.text_secondary'))
 
-            this.fieldLabel('显示名称')
-            TextInput({ text: this.name, placeholder: '例如：我的 R2 片库 / YouTube 影评' })
-              .height(42)
-              .fontSize(14)
-              .fontColor($r('app.color.text_primary'))
-              .backgroundColor($r('app.color.bg_secondary'))
-              .borderRadius(10)
-              .onChange((v: string) => { this.name = v; })
+                  this.fieldLabel('显示名称')
+                  TextInput({ text: this.name, placeholder: '例如：我的云影库' })
+                  .height(42)
+                  .fontSize(14)
+                  .fontColor($r('app.color.text_primary'))
+                  .backgroundColor($r('app.color.bg_secondary'))
+                  .borderRadius(10)
+                  .onChange((v: string) => { this.name = v; })
 
-            Text(this.urlFieldTitle())
-              .fontSize(12)
-              .fontColor($r('app.color.text_secondary'))
-            TextInput({ text: this.baseUrl, placeholder: this.urlPlaceholder() })
-              .height(42)
-              .fontSize(14)
-              .fontColor($r('app.color.text_primary'))
-              .backgroundColor($r('app.color.bg_secondary'))
-              .borderRadius(10)
-              .onChange((v: string) => { this.baseUrl = v; })
+                  Text(this.urlFieldTitle())
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+                  TextInput({ text: this.baseUrl, placeholder: this.urlPlaceholder() })
+                  .height(42)
+                  .fontSize(14)
+                  .fontColor($r('app.color.text_primary'))
+                  .backgroundColor($r('app.color.bg_secondary'))
+                  .borderRadius(10)
+                  .onChange((v: string) => { this.baseUrl = v; })
 
-            if (this.sourceType === 's3') {
-              Row({ space: 10 }) {
-                Column({ space: 6 }) {
-                  this.fieldLabel('Region 区域')
-                  TextInput({ text: this.s3Region, placeholder: 'us-east-1 或 auto' })
+                  if (this.sourceType === 's3') {
+                    Row({ space: 10 }) {
+                      Column({ space: 6 }) {
+                        this.fieldLabel('Region 区域')
+                        TextInput({ text: this.s3Region, placeholder: 'us-east-1 或 auto' })
+                        .height(42)
+                        .fontSize(14)
+                        .fontColor($r('app.color.text_primary'))
+                        .backgroundColor($r('app.color.bg_secondary'))
+                        .borderRadius(10)
+                        .onChange((v: string) => { this.s3Region = v; })
+                      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+                      Column({ space: 6 }) {
+                        this.fieldLabel('子目录 Prefix')
+                        TextInput({ text: this.rootPath, placeholder: '/' })
+                        .height(42)
+                        .fontSize(14)
+                        .fontColor($r('app.color.text_primary'))
+                        .backgroundColor($r('app.color.bg_secondary'))
+                        .borderRadius(10)
+                        .onChange((v: string) => { this.rootPath = v; })
+                      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                    }.width('100%')
+                  } else if (this.sourceType === 'youtube' || this.sourceType === 'douyin') {
+                    Text(
+                    this.sourceType === 'douyin'
+                    ? '解析服务地址（选填）'
+                    : '解析服务地址（选填）'
+                    )
+                    .fontSize(12)
+                    .fontColor($r('app.color.text_secondary'))
+                    TextInput({ text: this.ytMirrorUrl, placeholder: 'https://your-parser-api-host' })
                     .height(42)
                     .fontSize(14)
                     .fontColor($r('app.color.text_primary'))
                     .backgroundColor($r('app.color.bg_secondary'))
                     .borderRadius(10)
-                    .onChange((v: string) => { this.s3Region = v; })
-                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-
-                Column({ space: 6 }) {
-                  this.fieldLabel('子目录 Prefix')
-                  TextInput({ text: this.rootPath, placeholder: '/' })
+                    .onChange((v: string) => { this.ytMirrorUrl = v; })
+                  } else if (this.sourceType === 'smb' || this.sourceType === 'webdav' || this.sourceType === 'alist') {
+                    this.fieldLabel(this.sourceType === 'smb' ? '共享内子目录路径' : '初始根目录路径')
+                    TextInput({ text: this.rootPath, placeholder: this.sourceType === 'smb' ? '/rw/download/movie' : '/' })
                     .height(42)
                     .fontSize(14)
                     .fontColor($r('app.color.text_primary'))
                     .backgroundColor($r('app.color.bg_secondary'))
                     .borderRadius(10)
                     .onChange((v: string) => { this.rootPath = v; })
-                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-              }.width('100%')
-            } else if (this.sourceType === 'youtube' || this.sourceType === 'douyin') {
-              Text(
-                this.sourceType === 'douyin'
-                  ? '自建抖音解析 API 地址（选填，如 Douyin_TikTok_Download_API）'
-                  : 'Piped / Invidious 解析镜像（选填，用于加速或签名流直链）'
-              )
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
-              TextInput({ text: this.ytMirrorUrl, placeholder: 'https://your-parser-api-host' })
-                .height(42)
-                .fontSize(14)
-                .fontColor($r('app.color.text_primary'))
-                .backgroundColor($r('app.color.bg_secondary'))
-                .borderRadius(10)
-                .onChange((v: string) => { this.ytMirrorUrl = v; })
-            } else if (this.sourceType === 'smb' || this.sourceType === 'webdav' || this.sourceType === 'alist') {
-              this.fieldLabel(this.sourceType === 'smb' ? '共享内子目录路径' : '初始根目录路径')
-              TextInput({ text: this.rootPath, placeholder: this.sourceType === 'smb' ? '/rw/download/movie' : '/' })
-                .height(42)
-                .fontSize(14)
-                .fontColor($r('app.color.text_primary'))
-                .backgroundColor($r('app.color.bg_secondary'))
-                .borderRadius(10)
-                .onChange((v: string) => { this.rootPath = v; })
-            }
-          }
-          .width('100%')
-          .padding(16)
-          .borderRadius(14)
-          .backgroundColor($r('app.color.bg_elevated'))
-          .border({ width: 0.8, color: $r('app.color.border_subtle') })
-          .alignItems(HorizontalAlign.Start)
+                  }
+                }
+                .width('100%')
+                .padding(16)
+                .borderRadius(14)
+                .backgroundColor($r('app.color.bg_elevated'))
+                .border({ width: 0.8, color: $r('app.color.border_subtle') })
+                .alignItems(HorizontalAlign.Start)
 
-          // Context-Specific Credentials (hidden for YouTube / Douyin / IPTV public feeds unless needed)
-          if (this.sourceType !== 'youtube' && this.sourceType !== 'douyin' && this.sourceType !== 'iptv') {
-            Column({ space: 12 }) {
-              Row({ space: 8 }) {
-                Image($r('app.media.ic_shield_vault')).width(18).height(18)
-                Text(
-                  this.sourceType === 's3'
-                    ? 'S3 Access Key / Secret（HUKS 加密存储）'
-                    : (this.sourceType === 'plex' ? 'Plex Token 鉴权（HUKS 加密存储）' : '账号鉴权（HUKS AES-256-GCM 硬件密钥库加密）')
-                )
-                  .fontSize(13)
-                  .fontWeight(FontWeight.Bold)
-                  .fontColor($r('app.color.text_secondary'))
-              }.width('100%')
+                // Context-Specific Credentials (hidden for YouTube / Douyin / IPTV public feeds unless needed)
+                if (this.sourceType !== 'youtube' && this.sourceType !== 'douyin' && this.sourceType !== 'iptv') {
+                  Column({ space: 12 }) {
+                    Row({ space: 8 }) {
+                      Image($r('app.media.ic_shield_vault')).width(18).height(18)
+                      Text(
+                      this.sourceType === 's3'
+                      ? 'S3 Access Key / Secret（HUKS 加密存储）'
+                      : (this.sourceType === 'plex' ? 'Plex Token 鉴权（HUKS 加密存储）' : '账号鉴权（HUKS AES-256-GCM 硬件密钥库加密）')
+                      )
+                      .fontSize(13)
+                      .fontWeight(FontWeight.Bold)
+                      .fontColor($r('app.color.text_secondary'))
+                    }.width('100%')
 
-              Row({ space: 10 }) {
-                Column({ space: 6 }) {
-                  Text(
-                    this.sourceType === 's3'
-                      ? 'Access Key ID'
-                      : (this.sourceType === 'plex' ? 'Plex 用户名（选填）' : (this.sourceType === 'emby' ? '用户名（API Key 可留空）' : '用户名'))
-                  )
-                    .fontSize(12)
-                    .fontColor($r('app.color.text_secondary'))
-                  TextInput({ text: this.username, placeholder: this.sourceType === 's3' ? 'AKIA...（公开桶留空）' : 'admin' })
-                    .height(42)
+                    Row({ space: 10 }) {
+                      Column({ space: 6 }) {
+                        Text(
+                        this.sourceType === 's3'
+                        ? 'Access Key ID'
+                        : (this.sourceType === 'plex' ? 'Plex 用户名（选填）' : (this.sourceType === 'emby' ? '用户名（API Key 可留空）' : '用户名'))
+                        )
+                        .fontSize(12)
+                        .fontColor($r('app.color.text_secondary'))
+                        TextInput({ text: this.username, placeholder: this.sourceType === 's3' ? 'AKIA...（公开桶留空）' : 'admin' })
+                        .height(42)
+                        .fontSize(14)
+                        .fontColor($r('app.color.text_primary'))
+                        .backgroundColor($r('app.color.bg_secondary'))
+                        .borderRadius(10)
+                        .onChange((v: string) => { this.username = v; })
+                      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+                      Column({ space: 6 }) {
+                        Text(
+                        this.sourceType === 's3'
+                        ? 'Secret Access Key'
+                        : (this.sourceType === 'plex' ? 'X-Plex-Token' : (this.sourceType === 'emby' ? '密码或 API Key' : '密码'))
+                        )
+                        .fontSize(12)
+                        .fontColor($r('app.color.text_secondary'))
+                        TextInput({ text: this.password, placeholder: '••••••' })
+                        .type(InputType.Password)
+                        .height(42)
+                        .fontSize(14)
+                        .fontColor($r('app.color.text_primary'))
+                        .backgroundColor($r('app.color.bg_secondary'))
+                        .borderRadius(10)
+                        .onChange((v: string) => { this.password = v; })
+                      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                    }.width('100%')
+                  }
+                  .width('100%')
+                  .padding(16)
+                  .borderRadius(14)
+                  .backgroundColor($r('app.color.bg_elevated'))
+                  .border({ width: 0.8, color: $r('app.color.border_subtle') })
+                  .alignItems(HorizontalAlign.Start)
+                }
+
+                // Collapsible Advanced Network & Protocol Options
+                Column({ space: 12 }) {
+                  Row() {
+                    Column({ space: 2 }) {
+                      Text('高级协议与传输选项').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+                      Text(`自签名 TLS：${this.allowInsecureTls ? '信任' : '严格'}${this.sourceType === 's3' ? ` · PathStyle：${this.s3UsePathStyle ? '开启' : '关闭'}` : ''}`)
+                      .fontSize(11)
+                      .fontColor($r('app.color.text_muted'))
+                    }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+                    SymbolGlyph(this.showAdvanced ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
                     .fontSize(14)
-                    .fontColor($r('app.color.text_primary'))
-                    .backgroundColor($r('app.color.bg_secondary'))
-                    .borderRadius(10)
-                    .onChange((v: string) => { this.username = v; })
-                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                    .fontColor([$r('app.color.text_muted')])
+                  }
+                  .width('100%')
+                  .onClick(() => { this.showAdvanced = !this.showAdvanced; })
 
-                Column({ space: 6 }) {
-                  Text(
-                    this.sourceType === 's3'
-                      ? 'Secret Access Key'
-                      : (this.sourceType === 'plex' ? 'X-Plex-Token' : (this.sourceType === 'emby' ? '密码或 API Key' : '密码'))
-                  )
-                    .fontSize(12)
-                    .fontColor($r('app.color.text_secondary'))
-                  TextInput({ text: this.password, placeholder: '••••••' })
-                    .type(InputType.Password)
-                    .height(42)
-                    .fontSize(14)
-                    .fontColor($r('app.color.text_primary'))
-                    .backgroundColor($r('app.color.bg_secondary'))
-                    .borderRadius(10)
-                    .onChange((v: string) => { this.password = v; })
-                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-              }.width('100%')
-            }
-            .width('100%')
-            .padding(16)
-            .borderRadius(14)
-            .backgroundColor($r('app.color.bg_elevated'))
-            .border({ width: 0.8, color: $r('app.color.border_subtle') })
-            .alignItems(HorizontalAlign.Start)
-          }
+                  if (this.showAdvanced) {
+                    Divider().color($r('app.color.divider'))
 
-          // Collapsible Advanced Network & Protocol Options
-          Column({ space: 12 }) {
-            Row() {
-              Column({ space: 2 }) {
-                Text('高级协议与传输选项').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-                Text(`自签名 TLS：${this.allowInsecureTls ? '信任' : '严格'}${this.sourceType === 's3' ? ` · PathStyle：${this.s3UsePathStyle ? '开启' : '关闭'}` : ''}`)
-                  .fontSize(11)
-                  .fontColor($r('app.color.text_muted'))
-              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                    Row() {
+                      Column({ space: 2 }) {
+                        Text('信任局域网自签名 HTTPS 证书').fontSize(14).fontColor($r('app.color.text_primary'))
+                        Text('MinIO / NAS / 内网反代推荐开启').fontSize(11).fontColor($r('app.color.text_muted'))
+                      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                      Toggle({ type: ToggleType.Switch, isOn: this.allowInsecureTls })
+                      .selectedColor($r('app.color.accent_blue'))
+                      .onChange((val: boolean) => { this.allowInsecureTls = val; })
+                    }.width('100%')
 
-              SymbolGlyph(this.showAdvanced ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
-                .fontSize(14)
-                .fontColor([$r('app.color.text_muted')])
-            }
-            .width('100%')
-            .onClick(() => { this.showAdvanced = !this.showAdvanced; })
+                    if (this.sourceType === 's3') {
+                      Row() {
+                        Column({ space: 2 }) {
+                          Text('使用 S3 Path-Style URL 访问').fontSize(14).fontColor($r('app.color.text_primary'))
+                          Text('MinIO / 地址末尾带桶名选开启；Virtual-Host 选关闭').fontSize(11).fontColor($r('app.color.text_muted'))
+                        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                        Toggle({ type: ToggleType.Switch, isOn: this.s3UsePathStyle })
+                        .selectedColor($r('app.color.accent_blue'))
+                        .onChange((val: boolean) => { this.s3UsePathStyle = val; })
+                      }.width('100%')
+                    }
 
-            if (this.showAdvanced) {
-              Divider().color($r('app.color.divider'))
+                    if (this.sourceType === 'alist') {
+                      Row() {
+                        Column({ space: 2 }) {
+                          Text('Alist 302 直链缓存优化').fontSize(14).fontColor($r('app.color.text_primary'))
+                          Text('缓存重定向直链 10 分钟，降低拖动 Seek 触发风控').fontSize(11).fontColor($r('app.color.text_muted'))
+                        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                        Toggle({ type: ToggleType.Switch, isOn: this.cacheAlist302 })
+                        .selectedColor($r('app.color.accent_blue'))
+                        .onChange((val: boolean) => { this.cacheAlist302 = val; })
+                      }.width('100%')
+                    }
 
-              Row() {
-                Column({ space: 2 }) {
-                  Text('信任局域网自签名 HTTPS 证书').fontSize(14).fontColor($r('app.color.text_primary'))
-                  Text('MinIO / NAS / 内网反代推荐开启').fontSize(11).fontColor($r('app.color.text_muted'))
-                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                Toggle({ type: ToggleType.Switch, isOn: this.allowInsecureTls })
-                  .selectedColor($r('app.color.accent_blue'))
-                  .onChange((val: boolean) => { this.allowInsecureTls = val; })
-              }.width('100%')
+                    if (this.sourceType === 'youtube') {
+                      this.fieldLabel('首选清晰度')
+                      Row({ space: 8 }) {
+                        ForEach(['1080p', '720p', '480p'], (q: string) => {
+                          Text(q)
+                          .layoutWeight(1)
+                          .height(34)
+                          .fontSize(12)
+                          .fontColor(this.ytQualityPref === q ? Color.White : $r('app.color.text_secondary'))
+                          .textAlign(TextAlign.Center)
+                          .borderRadius(8)
+                          .backgroundColor(this.ytQualityPref === q ? $r('app.color.accent_blue') : $r('app.color.bg_secondary'))
+                          .onClick(() => { this.ytQualityPref = q; })
+                        })
+                      }.width('100%')
+                    }
 
-              if (this.sourceType === 's3') {
-                Row() {
-                  Column({ space: 2 }) {
-                    Text('使用 S3 Path-Style URL 访问').fontSize(14).fontColor($r('app.color.text_primary'))
-                    Text('MinIO / 地址末尾带桶名选开启；Virtual-Host 选关闭').fontSize(11).fontColor($r('app.color.text_muted'))
-                  }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                  Toggle({ type: ToggleType.Switch, isOn: this.s3UsePathStyle })
-                    .selectedColor($r('app.color.accent_blue'))
-                    .onChange((val: boolean) => { this.s3UsePathStyle = val; })
-                }.width('100%')
-              }
-
-              if (this.sourceType === 'alist') {
-                Row() {
-                  Column({ space: 2 }) {
-                    Text('Alist 302 直链缓存优化').fontSize(14).fontColor($r('app.color.text_primary'))
-                    Text('缓存重定向直链 10 分钟，降低拖动 Seek 触发风控').fontSize(11).fontColor($r('app.color.text_muted'))
-                  }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                  Toggle({ type: ToggleType.Switch, isOn: this.cacheAlist302 })
-                    .selectedColor($r('app.color.accent_blue'))
-                    .onChange((val: boolean) => { this.cacheAlist302 = val; })
-                }.width('100%')
-              }
-
-              if (this.sourceType === 'youtube') {
-                this.fieldLabel('YouTube 首选最高清晰度')
-                Row({ space: 8 }) {
-                  ForEach(['1080p', '720p', '480p'], (q: string) => {
-                    Text(q)
-                      .layoutWeight(1)
-                      .height(34)
-                      .fontSize(12)
-                      .fontColor(this.ytQualityPref === q ? Color.White : $r('app.color.text_secondary'))
-                      .textAlign(TextAlign.Center)
+                    if (this.sourceType === 'iptv') {
+                      this.fieldLabel('自定义 User-Agent（选填）')
+                      TextInput({ text: this.iptvUserAgent, placeholder: 'Lavf/58.76.100 或 PotPlayer' })
+                      .height(40)
+                      .fontSize(13)
+                      .fontColor($r('app.color.text_primary'))
+                      .backgroundColor($r('app.color.bg_secondary'))
                       .borderRadius(8)
-                      .backgroundColor(this.ytQualityPref === q ? $r('app.color.accent_blue') : $r('app.color.bg_secondary'))
-                      .onClick(() => { this.ytQualityPref = q; })
-                  })
-                }.width('100%')
-              }
+                      .onChange((v: string) => { this.iptvUserAgent = v; })
+                    }
+                  }
+                }
+                .width('100%')
+                .padding(16)
+                .borderRadius(14)
+                .backgroundColor($r('app.color.bg_elevated'))
+                .border({ width: 0.8, color: $r('app.color.border_subtle') })
 
-              if (this.sourceType === 'iptv') {
-                this.fieldLabel('自定义 User-Agent（选填）')
-                TextInput({ text: this.iptvUserAgent, placeholder: 'Lavf/58.76.100 或 PotPlayer' })
-                  .height(40)
-                  .fontSize(13)
-                  .fontColor($r('app.color.text_primary'))
-                  .backgroundColor($r('app.color.bg_secondary'))
-                  .borderRadius(8)
-                  .onChange((v: string) => { this.iptvUserAgent = v; })
+                if (this.testMessage) {
+                  Row({ space: 8 }) {
+                    SymbolGlyph(this.testOk ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.exclamationmark_triangle_fill'))
+                    .fontSize(16)
+                    .fontColor([this.testOk ? $r('app.color.success') : $r('app.color.danger')])
+                    Text(this.testMessage)
+                    .fontSize(13)
+                    .fontColor(this.testOk ? $r('app.color.success') : $r('app.color.danger'))
+                    .layoutWeight(1)
+                  }
+                  .width('100%')
+                  .padding(12)
+                  .borderRadius(12)
+                  .backgroundColor($r('app.color.bg_elevated'))
+                  .border({ width: 0.8, color: this.testOk ? $r('app.color.success') : $r('app.color.danger') })
+                }
               }
+              .padding({ left: 18, right: 18, top: 14, bottom: 24 })
+              .width('100%')
             }
-          }
-          .width('100%')
-          .padding(16)
-          .borderRadius(14)
-          .backgroundColor($r('app.color.bg_elevated'))
-          .border({ width: 0.8, color: $r('app.color.border_subtle') })
+            .layoutWeight(1)
+            .width('100%')
+            .align(Alignment.TopStart)
+            .scrollBar(BarState.Off)
 
-          if (this.testMessage) {
-            Row({ space: 8 }) {
-              SymbolGlyph(this.testOk ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.exclamationmark_triangle_fill'))
-                .fontSize(16)
-                .fontColor([this.testOk ? $r('app.color.success') : $r('app.color.danger')])
-              Text(this.testMessage)
-                .fontSize(13)
-                .fontColor(this.testOk ? $r('app.color.success') : $r('app.color.danger'))
-                .layoutWeight(1)
+            // Sticky Bottom Actions Bar
+            Row({ space: 12 }) {
+              Button(this.testing ? '测试中...' : '测试连接')
+              .layoutWeight(1)
+              .height(46)
+              .fontSize(14)
+              .fontColor($r('app.color.text_primary'))
+              .backgroundColor($r('app.color.bg_elevated'))
+              .borderRadius(12)
+              .border({ width: 0.8, color: $r('app.color.fill_strong') })
+              .enabled(!this.testing)
+              .onClick(() => { this.runConnectionTest(); })
+
+              Button(this.saving ? '保存中...' : '保存片源')
+              .layoutWeight(1)
+              .height(46)
+              .fontSize(15)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(Color.White)
+              .backgroundColor($r('app.color.accent_blue'))
+              .borderRadius(12)
+              .enabled(!this.saving)
+              .onClick(() => { this.saveAndReturn(); })
             }
             .width('100%')
-            .padding(12)
-            .borderRadius(12)
-            .backgroundColor($r('app.color.bg_elevated'))
-            .border({ width: 0.8, color: this.testOk ? $r('app.color.success') : $r('app.color.danger') })
+            .padding({ left: 18, right: 18, top: 10, bottom: 18 })
+            .backgroundColor($r('app.color.bar_glass'))
+            .border({ width: { top: 0.6 }, color: $r('app.color.fill_subtle') })
           }
+          .width('100%')
+          .height('100%')
+          .backgroundColor($r('app.color.bg_primary'))
         }
-        .padding({ left: 18, right: 18, top: 14, bottom: 24 })
-        .width('100%')
       }
+      .width('100%')
       .layoutWeight(1)
-      .width('100%')
-      .align(Alignment.TopStart)
-      .scrollBar(BarState.Off)
-
-      // Sticky Bottom Actions Bar
-      Row({ space: 12 }) {
-        Button(this.testing ? '测试中...' : '测试连接')
-          .layoutWeight(1)
-          .height(46)
-          .fontSize(14)
-          .fontColor($r('app.color.text_primary'))
-          .backgroundColor($r('app.color.bg_elevated'))
-          .borderRadius(12)
-          .border({ width: 0.8, color: $r('app.color.fill_strong') })
-          .enabled(!this.testing)
-          .onClick(() => { this.runConnectionTest(); })
-
-        Button(this.saving ? '保存中...' : '保存片源')
-          .layoutWeight(1)
-          .height(46)
-          .fontSize(15)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(Color.White)
-          .backgroundColor($r('app.color.accent_blue'))
-          .borderRadius(12)
-          .enabled(!this.saving)
-          .onClick(() => { this.saveAndReturn(); })
-      }
-      .width('100%')
-      .padding({ left: 18, right: 18, top: 10, bottom: 18 })
-      .backgroundColor($r('app.color.bar_glass'))
-      .border({ width: { top: 0.6 }, color: $r('app.color.fill_subtle') })
     }
     .width('100%')
     .height('100%')

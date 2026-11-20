@@ -1,6 +1,8 @@
 import { BreakpointType } from '../common/Constants';
 import { Formatters } from '../common/Formatters';
+import { Layout } from '../common/Layout';
 import { MediaArtwork } from '../common/MediaArtwork';
+import { appMenuOptions } from '../common/MenuSurface';
 import { MediaCategory, MediaItem, SeriesGroup, WatchHistoryRecord } from '../common/Types';
 import { PosterCard } from '../components/PosterCard';
 import { AppStore } from '../services/AppStore';
@@ -8,6 +10,7 @@ import { AppStore } from '../services/AppStore';
 @ComponentV2
 export struct LibraryView {
   @Param breakpoint: BreakpointType = 'sm';
+  @Param contentWidth: number = 360;
   @Param onOpenMovie: (item: MediaItem) => void = () => {};
   @Param onOpenSeries: (series: SeriesGroup) => void = () => {};
   @Param onPlayDirect: (item: MediaItem, startPosMs: number) => void = () => {};
@@ -18,13 +21,6 @@ export struct LibraryView {
   @Local store: AppStore = AppStore.getInstance();
   @Local category: MediaCategory = 'all';
   @Local heroImgFailed: boolean = false;
-
-  private getGridTemplate(): string {
-    if (this.breakpoint === 'xl') return '1fr 1fr 1fr 1fr 1fr 1fr';
-    if (this.breakpoint === 'lg') return '1fr 1fr 1fr 1fr 1fr';
-    if (this.breakpoint === 'md' || this.store.isLandscape) return '1fr 1fr 1fr 1fr';
-    return '1fr 1fr 1fr';
-  }
 
   private getFilteredMovies(): MediaItem[] {
     if (this.category === 'tv') return [];
@@ -63,6 +59,11 @@ export struct LibraryView {
     return Math.min(1, h.positionMs / h.durationMs);
   }
 
+  private resumeMs(itemId: string): number {
+    const h = this.store.getHistoryForItem(itemId);
+    return h && !h.finished && h.positionMs > 5000 ? h.positionMs : 0;
+  }
+
   build() {
     Scroll() {
       Column({ space: 20 }) {
@@ -75,7 +76,7 @@ export struct LibraryView {
                 .height(34)
             }
             Column({ space: 2 }) {
-              Text('媒体影库')
+              Text('棱镜影院')
                 .fontSize(25)
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.text_primary'))
@@ -131,7 +132,7 @@ export struct LibraryView {
             if ((this.getHeroItem()!.backdropUrl || this.getHeroItem()!.posterUrl) && !this.heroImgFailed) {
               Image(MediaArtwork.resolve(this.getHeroItem()!.backdropUrl || this.getHeroItem()!.posterUrl))
                 .width('100%')
-                .height(this.breakpoint === 'sm' ? 224 : 280)
+                .height(Layout.heroHeight(this.breakpoint))
                 .objectFit(ImageFit.Cover)
                 .borderRadius(18)
                 .onError(() => {
@@ -141,7 +142,7 @@ export struct LibraryView {
               Stack({ alignContent: Alignment.TopEnd }) {
                 Column()
                   .width('100%')
-                  .height(this.breakpoint === 'sm' ? 224 : 280)
+                  .height(Layout.heroHeight(this.breakpoint))
                   .linearGradient({
                     angle: 135,
                     colors: [
@@ -157,13 +158,13 @@ export struct LibraryView {
                   .margin({ top: 12, right: 8 })
               }
               .width('100%')
-              .height(this.breakpoint === 'sm' ? 224 : 280)
+              .height(Layout.heroHeight(this.breakpoint))
               .borderRadius(18)
             }
 
             Column()
               .width('100%')
-              .height(this.breakpoint === 'sm' ? 224 : 280)
+              .height(Layout.heroHeight(this.breakpoint))
               .linearGradient({
                 angle: 180,
                 colors: [['#1A0A0B0F', 0], ['#880A0B0F', 0.45], ['#F00A0B0F', 1]]
@@ -206,7 +207,7 @@ export struct LibraryView {
               }
 
               Text(this.getHeroItem()!.title)
-                .fontSize(this.breakpoint === 'sm' ? 21 : 28)
+                .fontSize(this.breakpoint === 'xl' ? 32 : (this.breakpoint === 'sm' ? 21 : 27))
                 .fontWeight(FontWeight.Bold)
                 .fontColor(Color.White)
                 .maxLines(1)
@@ -222,7 +223,7 @@ export struct LibraryView {
                 .fontColor('#D9EEF2FA')
                 .maxLines(2)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
-                .constraintSize({ maxWidth: 560 })
+                .constraintSize({ maxWidth: this.breakpoint === 'sm' ? 560 : 680 })
 
               Row({ space: 10 }) {
                 Button() {
@@ -413,7 +414,7 @@ export struct LibraryView {
               value: '恢复示例影库',
               action: () => { this.store.seedOpenShowcaseLibrary(); }
             }
-          ])
+          ], appMenuOptions())
         }
         .width('100%')
 
@@ -425,23 +426,31 @@ export struct LibraryView {
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_primary'))
 
-            Grid() {
+            GridRow({
+              columns: 12,
+              gutter: { x: 14, y: 16 },
+              breakpoints: {
+                value: ['600vp', '840vp', '1440vp'],
+                reference: BreakpointsReference.ComponentSize
+              }
+            }) {
               ForEach(this.getFilteredSeries(), (grp: SeriesGroup) => {
-                GridItem() {
+                GridCol({ span: { xs: 4, sm: 3, md: 2, lg: 2 } }) {
                   PosterCard({
                     title: grp.title,
                     subtitle: grp.year > 0 ? `${grp.year}` : `${grp.episodes.length} 集`,
                     posterUrl: grp.posterUrl,
                     rating: grp.rating,
                     episodeCountLabel: `${grp.episodes.length} 集`,
-                    onSelect: () => this.onOpenSeries(grp)
+                    onSelect: () => this.onOpenSeries(grp),
+                    onPlay: () => {
+                      const first = grp.episodes.length > 0 ? grp.episodes[0] : null;
+                      if (first) this.onPlayDirect(first, this.resumeMs(first.id));
+                    }
                   })
                 }
               }, (grp: SeriesGroup) => grp.seriesKey)
             }
-            .columnsTemplate(this.getGridTemplate())
-            .columnsGap(14)
-            .rowsGap(16)
             .width('100%')
           }
           .width('100%')
@@ -456,9 +465,16 @@ export struct LibraryView {
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_primary'))
 
-            Grid() {
+            GridRow({
+              columns: 12,
+              gutter: { x: 14, y: 16 },
+              breakpoints: {
+                value: ['600vp', '840vp', '1440vp'],
+                reference: BreakpointsReference.ComponentSize
+              }
+            }) {
               ForEach(this.getFilteredMovies(), (item: MediaItem) => {
-                GridItem() {
+                GridCol({ span: { xs: 4, sm: 3, md: 2, lg: 2 } }) {
                   PosterCard({
                     title: item.title,
                     subtitle: item.year > 0 ? `${item.year}` : item.qualityTag,
@@ -466,14 +482,12 @@ export struct LibraryView {
                     qualityTag: item.qualityTag,
                     rating: item.rating,
                     progressRatio: this.getProgressRatio(item.id),
-                    onSelect: () => this.onOpenMovie(item)
+                    onSelect: () => this.onOpenMovie(item),
+                    onPlay: () => this.onPlayDirect(item, this.resumeMs(item.id))
                   })
                 }
               }, (item: MediaItem) => item.id)
             }
-            .columnsTemplate(this.getGridTemplate())
-            .columnsGap(14)
-            .rowsGap(16)
             .width('100%')
           }
           .width('100%')
@@ -516,12 +530,18 @@ export struct LibraryView {
           .padding({ top: 48, bottom: 48 })
         }
       }
-      .padding({ left: 20, right: 20, top: 16, bottom: 32 })
+      .padding({
+        left: Layout.gutter(this.breakpoint),
+        right: Layout.gutter(this.breakpoint),
+        top: 16,
+        bottom: 32
+      })
       .width('100%')
+      .constraintSize({ maxWidth: Layout.contentMax(this.breakpoint) + Layout.gutter(this.breakpoint) * 2 })
     }
     .width('100%')
     .height('100%')
-    .align(Alignment.TopStart)
+    .align(Alignment.Top)
     .backgroundColor($r('app.color.bg_primary'))
     .scrollBar(BarState.Off)
   }

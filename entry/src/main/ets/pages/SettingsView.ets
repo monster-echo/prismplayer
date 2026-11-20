@@ -1,8 +1,16 @@
+import { common } from '@kit.AbilityKit';
+import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
+import { promptAction } from '@kit.ArkUI';
+import { systemShare } from '@kit.ShareKit';
+import { bundleManager } from '@kit.AbilityKit';
+import { AppConstants, BreakpointType } from '../common/Constants';
+import { Layout } from '../common/Layout';
 import { AppStore } from '../services/AppStore';
 import { ThemeMode } from '../common/Types';
 
 @ComponentV2
 export struct SettingsView {
+  @Param breakpoint: BreakpointType = 'sm';
   @Param onOpenDecoderPrefs: () => void = () => {};
   @Param onOpenCachePrefs: () => void = () => {};
   @Param onOpenSubtitlePrefs: () => void = () => {};
@@ -12,8 +20,69 @@ export struct SettingsView {
   @Param onOpenAboutPrivacy: () => void = () => {};
   @Param onOpenPrivacyPolicy: () => void = () => {};
   @Param onOpenUserAgreement: () => void = () => {};
+  @Param onRequestPro: () => void = () => {};
 
   @Local store: AppStore = AppStore.getInstance();
+  @Local showGroupQr: boolean = false;
+
+  /** 带品牌图分享：先落一张 card.png 到缓存，再连同文案一起交给系统分享面板。 */
+  private async shareApp(): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const raw = ctx.resourceManager.getRawFileContentSync('share/card.png');
+      const path = `${ctx.cacheDir}/prism-share-card.png`;
+      const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      fs.writeSync(file.fd, raw.buffer);
+      fs.closeSync(file);
+      const data = new systemShare.SharedData({
+        utd: 'general.png',
+        uri: fileUri.getUriFromPath(path),
+        title: '棱镜影院 PrismPlayer'
+      });
+      data.addRecord({
+        utd: 'general.plain-text',
+        content: '棱镜影院：NAS / WebDAV / 私有云播放器\nhttps://appgallery.huawei.com/app/detail?id=tech.zhongbei.prismplayer'
+      });
+      await new systemShare.ShareController(data).show(ctx, {});
+    } catch (_e) {
+      promptAction.showToast({ message: '当前设备不支持系统分享' });
+    }
+  }
+
+  /**
+   * 装了飞书就直接进群，没装就出二维码。
+   * 先用 canOpenLink 判断，避免 startAbility 触发系统「暂无可用打开方式」弹窗。
+   */
+  private openGroup(): void {
+    let canOpen = false;
+    try {
+      canOpen = bundleManager.canOpenLink(AppConstants.FEISHU_GROUP_URL);
+    } catch (_e) {
+      canOpen = false;
+    }
+    if (!canOpen) {
+      this.showGroupQr = true;
+      return;
+    }
+    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    ctx.startAbility({
+      action: 'ohos.want.action.viewData',
+      uri: AppConstants.FEISHU_GROUP_URL
+    }).catch(() => {
+      this.showGroupQr = true;
+    });
+  }
+
+  /** 打开应用市场的详情页，用户可在页面内评分。 */
+  private openStorePage(): void {
+    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    ctx.startAbility({
+      action: 'ohos.want.action.viewData',
+      uri: 'store://appgallery.huawei.com/app/detail?id=tech.zhongbei.prismplayer'
+    }).catch(() => {
+      promptAction.showToast({ message: '未找到应用市场，请先安装并打开本应用后再评分' });
+    });
+  }
 
   themeOptionLabel(mode: ThemeMode): string {
     return mode === 'light' ? '浅色' : mode === 'dark' ? '深色' : '跟随系统';
@@ -73,6 +142,58 @@ export struct SettingsView {
     .onClick(() => onTap())
   }
 
+  @Builder
+  settingSymbolRow(symbol: Resource, color: ResourceColor, title: string, valueText: string, onTap: () => void) {
+    Row({ space: 12 }) {
+      Column() {
+        SymbolGlyph(symbol).fontSize(20).fontColor([color])
+      }
+      .width(36)
+      .height(36)
+      .borderRadius(9)
+      .backgroundColor($r('app.color.fill_subtle'))
+      .justifyContent(FlexAlign.Center)
+
+      Text(title)
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .layoutWeight(1)
+
+      if (valueText) {
+        Text(valueText)
+          .fontSize(12)
+          .fontColor($r('app.color.text_muted'))
+          .maxLines(1)
+      }
+
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(14)
+        .fontColor([$r('app.color.text_muted')])
+    }
+    .width('100%')
+    .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+    .onClick(() => onTap())
+  }
+
+  @Builder
+  groupQrSheet() {
+    Column({ space: 14 }) {
+      Image($r('app.media.qr_group'))
+        .width(240)
+        .height(240)
+        .objectFit(ImageFit.Contain)
+        .borderRadius(12)
+      Text('扫码加入棱镜影院官方社群')
+        .fontSize(13)
+        .fontColor($r('app.color.text_secondary'))
+    }
+    .width('100%')
+    .padding({ top: 20, bottom: 28 })
+    .alignItems(HorizontalAlign.Center)
+  }
+
   build() {
     Scroll() {
       Column({ space: 18 }) {
@@ -84,7 +205,25 @@ export struct SettingsView {
             .fontColor($r('app.color.text_primary'))
         }.width('100%')
 
-        // Group 0: Appearance
+        // Group 0: Pro（放最上面，与「设置与 Pro」的入口命名对应）
+        Column({ space: 6 }) {
+          Column() {
+            this.settingNavRow(
+              $r('app.media.ic_pro_crown'),
+              'PrismPlayer Pro',
+              this.store.isPro ? '已激活' : '未激活',
+              () => this.onRequestPro()
+            )
+          }
+          .width('100%')
+          .borderRadius(14)
+          .backgroundColor($r('app.color.bg_elevated'))
+          .border({ width: 0.8, color: $r('app.color.border_subtle') })
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+
+        // Group 0.5: Appearance
         Column({ space: 6 }) {
           Text('外观')
             .fontSize(12)
@@ -190,7 +329,7 @@ export struct SettingsView {
               '私密文件夹隐藏',
               this.store.hiddenFolders.length > 0
                 ? (this.store.vaultUnlocked ? `已解锁 · ${this.store.hiddenFolders.length} 目录` : `已保护 ${this.store.hiddenFolders.length} 目录`)
-                : (this.store.hasVaultPin() ? '已设密码' : '未启用'),
+                : (this.store.hasVaultPattern() ? '已设图案' : '未启用'),
               () => this.onOpenPrivacyVault()
             )
             Divider().color($r('app.color.divider')).margin({ left: 62 })
@@ -222,14 +361,57 @@ export struct SettingsView {
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
+
+        // Group 3: 联系与分享
+        Column({ space: 6 }) {
+          Text('联系与分享')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_muted'))
+            .padding({ left: 4 })
+
+          Column() {
+            this.settingSymbolRow($r('sys.symbol.qrcode'), $r('app.color.accent_cyan'), '官方社群', '飞书 / 扫码', () => {
+              this.openGroup();
+            })
+            Divider().color($r('app.color.divider')).margin({ left: 62 })
+            this.settingSymbolRow($r('sys.symbol.share'), $r('app.color.accent_blue'), '分享给朋友', '', () => {
+              this.shareApp();
+            })
+            Divider().color($r('app.color.divider')).margin({ left: 62 })
+            this.settingSymbolRow($r('sys.symbol.star_fill'), $r('app.color.accent_gold'), '给个五星好评', '', () => {
+              this.openStorePage();
+            })
+          }
+          .width('100%')
+          .borderRadius(14)
+          .backgroundColor($r('app.color.bg_elevated'))
+          .border({ width: 0.8, color: $r('app.color.border_subtle') })
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
       }
-      .padding({ left: 20, right: 20, top: 16, bottom: 32 })
+      .padding({
+        left: Layout.gutter(this.breakpoint),
+        right: Layout.gutter(this.breakpoint),
+        top: 16,
+        bottom: 32
+      })
       .width('100%')
+      .constraintSize({ maxWidth: Layout.readingMax(this.breakpoint) + Layout.gutter(this.breakpoint) * 2 })
     }
     .width('100%')
     .height('100%')
-    .align(Alignment.TopStart)
+    .align(Alignment.Top)
     .backgroundColor($r('app.color.bg_primary'))
     .scrollBar(BarState.Off)
+    .bindSheet(this.showGroupQr, this.groupQrSheet(), {
+      height: 420,
+      dragBar: true,
+      showClose: true,
+      title: { title: '官方社群' },
+      backgroundColor: $r('app.color.bg_elevated'),
+      onDisappear: () => { this.showGroupQr = false; }
+    })
   }
 }

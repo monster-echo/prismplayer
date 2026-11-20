@@ -24,7 +24,7 @@ export struct SubtitleAssistPage {
     Column() {
       SubtitlePageHeader({
         title: '翻译与朗读',
-        caption: '对外挂字幕生效；硬解 / 软解通用',
+        caption: '仅对外挂字幕生效',
         onBack: () => this.onBack(),
         onClose: () => this.onClose()
       })
@@ -34,7 +34,7 @@ export struct SubtitleAssistPage {
           if (!this.hasExternalTrack()) {
             Column({ space: 6 }) {
               Text('还没有外挂字幕').fontSize(14).fontWeight(FontWeight.Medium).fontColor('#E5E7EB')
-              Text('翻译与朗读只处理外挂字幕；请先在「字幕轨道」页导入本地字幕或在线匹配。')
+              Text('先在「字幕轨道」导入或在线匹配。')
                 .fontSize(11)
                 .lineHeight(17)
                 .fontColor('#9CA3AF')
@@ -50,11 +50,11 @@ export struct SubtitleAssistPage {
           Column({ space: 12 }) {
             SubtitleSectionHeader({
               title: '外文字幕翻译为中文',
-              note: '非中文台词会在显示时翻译为中文，并与原文双语对照'
+              note: '外文台词显示中文译文，保留原文'
             })
             SubtitleToggleRow({
               title: '开启翻译',
-              desc: '英 / 法 / 日 / 韩等外挂字幕均可；已翻译内容会在内存中缓存',
+              desc: '外挂字幕均可翻译',
               value: this.session.translateEnabled,
               interactive: this.hasExternalTrack(),
               onChange: (v: boolean) => this.session.setTranslateEnabled(v)
@@ -80,11 +80,11 @@ export struct SubtitleAssistPage {
           Column({ space: 12 }) {
             SubtitleSectionHeader({
               title: 'AI 语音朗读字幕',
-              note: '使用 HarmonyOS CoreSpeechKit 语音合成，与视频播放同步朗读当前一句'
+              note: '系统语音朗读当前字幕'
             })
             SubtitleToggleRow({
               title: '开启朗读',
-              desc: '适合教程、纪录片与语言学习；关闭后立即停止发声',
+              desc: '关闭后立即停止',
               value: this.session.ttsEnabled,
               interactive: this.hasExternalTrack(),
               onChange: (v: boolean) => this.session.setTtsEnabled(v)
@@ -110,7 +110,7 @@ export struct SubtitleAssistPage {
           .border({ width: 0.7, color: '#1FFFFFFF' })
           .alignItems(HorizontalAlign.Start)
 
-          Text('翻译请求只会发送当前字幕文本到翻译服务；朗读由系统语音合成引擎完成。内嵌字幕轨不参与翻译与朗读。')
+          Text('翻译仅发送当前字幕文本；内嵌字幕不参与。')
             .fontSize(10)
             .lineHeight(16)
             .fontColor('#6B7280')

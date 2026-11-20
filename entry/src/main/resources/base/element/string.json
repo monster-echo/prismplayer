@@ -11,6 +11,26 @@
     {
       "name": "EntryAbility_label",
       "value": "棱镜影院"
+    },
+    {
+      "name": "widget_continue_display_name",
+      "value": "继续观看"
+    },
+    {
+      "name": "widget_continue_desc",
+      "value": "从上次停下的地方接着看"
+    },
+    {
+      "name": "shortcut_continue",
+      "value": "继续观看"
+    },
+    {
+      "name": "shortcut_library",
+      "value": "打开媒体库"
+    },
+    {
+      "name": "reason_distributed_datasync",
+      "value": "用于把你的播放进度与片源配置接续到同账号的其它鸿蒙设备"
     }
   ]
 }

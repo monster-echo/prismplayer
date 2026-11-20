@@ -166,6 +166,25 @@ export class SubtitleEngine {
     return 0;
   }
 
+  /**
+   * SRT/VTT often hard-wrap a sentence into 3 short lines. Reflow same-language lines
+   * into one paragraph so the UI can wrap by actual width; bilingual cues keep two lines.
+   */
+  private static normalizeCueLines(text: string): string {
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    if (lines.length <= 1) return lines.length > 0 ? lines[0] : '';
+    const zh: string[] = [];
+    const other: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (/[\u4e00-\u9fff\u3400-\u4dbf]/.test(lines[i])) zh.push(lines[i]);
+      else other.push(lines[i]);
+    }
+    if (zh.length > 0 && other.length > 0) {
+      return `${zh.join(' ')}\n${other.join(' ')}`;
+    }
+    return lines.join(' ');
+  }
+
   private static parseSrtOrVtt(content: string): SubtitleCue[] {
     const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const blocks = normalized.split(/\n{2,}/);
@@ -204,7 +223,7 @@ export class SubtitleEngine {
         index: idx++,
         startMs,
         endMs,
-        text: cleanText,
+        text: SubtitleEngine.normalizeCueLines(cleanText),
         alignment: 2,
         colorHex: '#FFFFFF',
         isBold,

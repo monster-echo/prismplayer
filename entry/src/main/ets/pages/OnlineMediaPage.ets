@@ -1,16 +1,14 @@
 import { pasteboard } from '@kit.BasicServicesKit';
+import { rcp } from '@kit.RemoteCommunicationKit';
 import { BilibiliClient, BilibiliVideoInfo } from '../services/BilibiliClient';
 import { DouyinClient } from '../services/DouyinClient';
-import { YouTubeClient } from '../services/YouTubeClient';
+import { YouTubeClient, ResolvedYouTubeStream } from '../services/YouTubeClient';
 import { NavHeaderBar } from '../components/NavHeaderBar';
+import { PageShell } from '../components/PageShell';
 import { AppStore } from '../services/AppStore';
 import { MediaItem, PlayerLaunchParams } from '../common/Types';
-import { ResolvedYouTubeStream } from '../services/YouTubeClient';
 
-/**
- * 网络媒体页：粘贴抖音 / B站 / YouTube 分享链接，提取播放内容后直接播放。
- * 抖音支持解析无水印流并离线保存至本地影库；B站走 html5 免登录直链（清晰度有限）。
- */
+/** 通用视频链接解析：粘贴链接或分享文本，尝试直接播放或提取页面视频地址。 */
 @Entry
 @ComponentV2
 struct OnlineMediaPage {
@@ -19,6 +17,12 @@ struct OnlineMediaPage {
   @Local busy: boolean = false;
   @Local statusText: string = '';
   @Local statusOk: boolean = false;
+  private linkSession: rcp.Session | null = null;
+
+  private getLinkSession(): rcp.Session {
+    if (!this.linkSession) this.linkSession = rcp.createSession();
+    return this.linkSession;
+  }
 
   onBackPress(): boolean {
     this.getUIContext().getRouter().back();
@@ -26,53 +30,116 @@ struct OnlineMediaPage {
   }
 
   private detectPlatform(text: string): string {
-    if (/douyin\.com|v\.douyin|抖音/i.test(text)) return 'douyin';
+    if (/douyin\.com|v\.douyin/i.test(text)) return 'douyin';
     if (BilibiliClient.isBilibiliShare(text)) return 'bilibili';
     if (/youtube\.com|youtu\.be/i.test(text)) return 'youtube';
     return '';
   }
 
-  private platformLabel(p: string): string {
-    return p === 'douyin' ? '抖音' : p === 'bilibili' ? 'B 站' : p === 'youtube' ? 'YouTube' : '';
+  private extractUrl(text: string): string {
+    const m = text.match(/https?:\/\/[^\s]+/);
+    if (!m) return text.trim();
+    return m[0].replace(/[)\]）】,，。]+$/, '');
   }
 
-  private async pasteFromClipboard(): Promise<void> {
+  private isDirectMedia(url: string): boolean {
+    return /\.(mp4|m3u8|webm|flv|mkv|mov|m4v|ts|mpd|avi)(\?|$)/i.test(url)
+      || /(^|[?&])(m3u8|hls|format=mp4)([=&]|$)/i.test(url);
+  }
+
+  private decodeHtml(value: string): string {
+    return value.replace(/&amp;/g, '&').replace(/&#x2F;/g, '/').replace(/&quot;/g, '"');
+  }
+
+  private resolveUrl(base: string, src: string): string {
+    const clean = this.decodeHtml(src.trim());
+    if (/^https?:\/\//i.test(clean)) return clean;
+    if (clean.startsWith('//')) return `https:${clean}`;
+    const origin = base.match(/^(https?:\/\/[^/]+)/);
+    if (!origin) return clean;
+    if (clean.startsWith('/')) return `${origin[1]}${clean}`;
+    const dir = base.substring(0, base.lastIndexOf('/') + 1);
+    return `${dir}${clean}`;
+  }
+
+  private async extractMediaUrl(pageUrl: string): Promise<string> {
+    if (this.isDirectMedia(pageUrl)) return pageUrl;
+    const req = new rcp.Request(pageUrl, 'GET', {
+      'User-Agent': 'Mozilla/5.0 (Linux; Android 12; HarmonyOS NEXT) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,*/*'
+    });
+    req.configuration = {
+      security: { remoteValidation: 'skip' },
+      transfer: { timeout: { connectMs: 6000, transferMs: 12000 } }
+    };
     try {
-      const pasteData = await pasteboard.getSystemPasteboard().getData();
-      const text = pasteData.getPrimaryText();
-      if (text && text.trim()) {
-        this.inputText = text.trim();
-        const platform = this.detectPlatform(this.inputText);
-        this.statusOk = true;
-        this.statusText = platform ? `已识别：${this.platformLabel(platform)} 链接` : '';
-      } else {
-        this.statusOk = false;
-        this.statusText = '剪贴板里没有文本内容';
-      }
+      const resp = await this.getLinkSession().fetch(req);
+      if (resp.statusCode < 200 || resp.statusCode >= 300) return pageUrl;
+      const html = resp.toString() || '';
+      const meta = html.match(/<meta[^>]+(?:property|name)=["'](?:og:video(?::url)?|twitter:player:stream)["'][^>]+content=["']([^"']+)["']/i)
+        || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:video(?::url)?|twitter:player:stream)["']/i);
+      if (meta) return this.resolveUrl(pageUrl, meta[1]);
+      const video = html.match(/<(?:video|source)[^>]+src=["']([^"']+)["']/i);
+      if (video) return this.resolveUrl(pageUrl, video[1]);
+      const direct = html.match(/https?:\\?\/\\?\/[^"'\s]+?\.(?:mp4|m3u8|webm|flv|mkv|mpd)(?:\?[^"'\s]*)?/i);
+      if (direct) return direct[0].replace(/\\\//g, '/');
     } catch (_e) {
-      this.statusOk = false;
-      this.statusText = '读取剪贴板失败，请手动粘贴';
+      // A page that cannot be parsed still gets one direct-play attempt.
     }
+    return pageUrl;
+  }
+
+  private async buildGenericItem(url: string): Promise<MediaItem> {
+    const streamUrl = await this.extractMediaUrl(url);
+    const clean = streamUrl.split('?')[0];
+    const slash = clean.lastIndexOf('/');
+    const name = slash >= 0 ? clean.substring(slash + 1) : '';
+    return {
+      id: `url_web_${Date.now()}`,
+      sourceId: 'url_web',
+      sourceType: 'iptv',
+      remotePath: `/url/${Date.now()}`,
+      streamUrl,
+      fileName: name || 'video',
+      fileSize: 0,
+      mediaType: 'movie',
+      seriesKey: `url_web_${Date.now()}`,
+      seriesTitle: '视频',
+      seasonNo: 1,
+      episodeNo: 0,
+      title: name || '视频链接',
+      originalTitle: name || '视频链接',
+      year: new Date().getFullYear(),
+      overview: '',
+      posterUrl: 'local://poster_bbb',
+      backdropUrl: 'local://backdrop_bbb',
+      rating: 0,
+      qualityTag: '链接',
+      tmdbId: 0,
+      durationMs: 0,
+      subtitleUrl: '',
+      addedAt: Date.now()
+    };
   }
 
   private buildBilibiliItem(info: BilibiliVideoInfo): MediaItem {
     return {
-      id: `bilibili_web_${info.bvid}`,
-      sourceId: 'bilibili_web',
+      id: `link_web_${info.bvid}`,
+      sourceId: 'link_web',
       sourceType: 'bilibili',
-      remotePath: `/bilibili/${info.bvid}.mp4`,
+      remotePath: `/link/${info.bvid}.mp4`,
       streamUrl: info.playUrl,
       fileName: `${info.bvid}.mp4`,
       fileSize: 0,
       mediaType: 'movie',
-      seriesKey: `bilibili_web_${info.bvid}`,
-      seriesTitle: 'B 站视频',
+      seriesKey: `link_web_${info.bvid}`,
+      seriesTitle: '视频',
       seasonNo: 1,
       episodeNo: 0,
       title: info.title,
       originalTitle: info.title,
       year: new Date().getFullYear(),
-      overview: `B 站视频 · ${info.bvid}\n原始分享链接：https://www.bilibili.com/video/${info.bvid}`,
+      overview: '',
       posterUrl: info.coverUrl || 'local://poster_bbb',
       backdropUrl: info.coverUrl || 'local://backdrop_bbb',
       rating: 0,
@@ -87,22 +154,22 @@ struct OnlineMediaPage {
   private buildYouTubeItem(res: ResolvedYouTubeStream): MediaItem {
     const videoId = res.streamUrl.length.toString(36);
     return {
-      id: `youtube_web_${Date.now()}_${videoId}`,
-      sourceId: 'youtube_web',
+      id: `link_web_${Date.now()}_${videoId}`,
+      sourceId: 'link_web',
       sourceType: 'youtube',
-      remotePath: `/youtube/${Date.now()}.mp4`,
+      remotePath: `/link/${Date.now()}.mp4`,
       streamUrl: res.streamUrl,
-      fileName: 'youtube_stream.mp4',
+      fileName: 'video.mp4',
       fileSize: 0,
       mediaType: 'movie',
-      seriesKey: `youtube_web_${Date.now()}`,
-      seriesTitle: 'YouTube 视频',
+      seriesKey: `link_web_${Date.now()}`,
+      seriesTitle: '视频',
       seasonNo: 1,
       episodeNo: 0,
-      title: res.title || 'YouTube 视频',
-      originalTitle: res.title || 'YouTube 视频',
+      title: res.title || '视频',
+      originalTitle: res.title || '视频',
       year: new Date().getFullYear(),
-      overview: 'YouTube 在线播放（解析结果有时效性，可能过期后需重新提取）',
+      overview: '',
       posterUrl: 'local://poster_bbb',
       backdropUrl: 'local://backdrop_bbb',
       rating: 0,
@@ -114,41 +181,48 @@ struct OnlineMediaPage {
     };
   }
 
-  private async resolveAndPlay(saveOffline: boolean): Promise<void> {
+  private async pasteFromClipboard(): Promise<void> {
+    try {
+      const pasteData = await pasteboard.getSystemPasteboard().getData();
+      const text = pasteData.getPrimaryText();
+      if (text && text.trim()) {
+        this.inputText = text.trim();
+        this.statusText = '';
+      } else {
+        this.statusOk = false;
+        this.statusText = '剪贴板里没有文本内容';
+      }
+    } catch (_e) {
+      this.statusOk = false;
+      this.statusText = '读取剪贴板失败，请手动粘贴';
+    }
+  }
+
+  private async resolveAndPlay(): Promise<void> {
     const text = this.inputText.trim();
     if (!text) {
       this.statusOk = false;
-      this.statusText = '请先粘贴抖音 / B站 / YouTube 分享链接';
-      return;
-    }
-    const platform = this.detectPlatform(text);
-    if (!platform) {
-      this.statusOk = false;
-      this.statusText = '未识别到支持的平台链接（目前支持抖音 / B站 / YouTube）';
+      this.statusText = '请先粘贴链接';
       return;
     }
     this.busy = true;
     this.statusOk = true;
-    this.statusText = saveOffline
-      ? `正在解析${this.platformLabel(platform)}无水印流并离线保存...`
-      : `正在提取${this.platformLabel(platform)}播放内容...`;
+    this.statusText = '正在解析链接...';
     try {
       let item: MediaItem;
-      if (platform === 'douyin') {
-        item = await this.store.resolveDouyinShareAndImport(text, saveOffline);
-      } else if (platform === 'bilibili') {
-        const info = await BilibiliClient.resolveShareLink(text);
-        item = this.buildBilibiliItem(info);
+      const platform = this.detectPlatform(text);
+      if (platform === 'bilibili') {
+        item = this.buildBilibiliItem(await BilibiliClient.resolveShareLink(text));
+      } else if (platform === 'douyin') {
+        item = await this.store.resolveDouyinShareAndImport(text, false);
+      } else if (platform === 'youtube') {
+        item = this.buildYouTubeItem(await YouTubeClient.resolvePlayableStream(text));
       } else {
-        const res = await YouTubeClient.resolvePlayableStream(text);
-        item = this.buildYouTubeItem(res);
+        item = await this.buildGenericItem(this.extractUrl(text));
       }
       this.busy = false;
-      this.statusText = `✓ 解析成功《${item.title.substring(0, 18)}》`;
-      const launch: PlayerLaunchParams = {
-        item,
-        startPositionMs: 0
-      };
+      this.statusText = '✓ 已解析';
+      const launch: PlayerLaunchParams = { item, startPositionMs: 0 };
       this.getUIContext().getRouter().pushUrl({ url: 'pages/PlayerPage', params: launch });
     } catch (e) {
       this.busy = false;
@@ -157,159 +231,107 @@ struct OnlineMediaPage {
     }
   }
 
-
-  @Builder
-  platformChip(name: string, desc: string) {
-    Column({ space: 3 }) {
-      Text(name)
-        .fontSize(14)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-      Text(desc)
-        .fontSize(10)
-        .fontColor($r('app.color.text_muted'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-    }
-    .layoutWeight(1)
-    .padding({ top: 12, bottom: 12, left: 8, right: 8 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.bg_elevated'))
-    .border({ width: 0.8, color: $r('app.color.border_subtle') })
-    .alignItems(HorizontalAlign.Center)
-  }
-
   build() {
     Column() {
       NavHeaderBar({
-        title: '网络媒体',
-        subtitle: '粘贴分享链接 · 提取播放内容',
+        title: '视频解析',
+        subtitle: '粘贴链接 · 尝试播放',
         onBack: () => this.getUIContext().getRouter().back()
       })
 
-      Scroll() {
-        Column({ space: 16 }) {
-          // 支持的平台
-          Row({ space: 8 }) {
-            this.platformChip('抖音', '无水印 · 可离线保存')
-            this.platformChip('B 站', '免登录直链')
-            this.platformChip('YouTube', '需可访问外网')
-          }
-          .width('100%')
+      Stack() {
+        PageShell({ maxWidth: 760 }) {
+          Column() {
 
-          // 粘贴输入卡片
-          Column({ space: 10 }) {
-            Row({ space: 8 }) {
-              Text('分享链接 / 口令')
-                .fontSize(15)
-                .fontWeight(FontWeight.Bold)
-                .fontColor($r('app.color.text_primary'))
-              Blank()
-              Button() {
-                Text('粘贴')
+            Scroll() {
+              Column({ space: 14 }) {
+                Column({ space: 10 }) {
+                  Row({ space: 8 }) {
+                    Text('链接')
+                    .fontSize(15)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor($r('app.color.text_primary'))
+                    Blank()
+                    Button() {
+                      Text('粘贴')
+                      .fontSize(13)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor($r('app.color.accent_blue'))
+                    }
+                    .height(30)
+                    .padding({ left: 12, right: 12 })
+                    .backgroundColor($r('app.color.bg_secondary'))
+                    .borderRadius(8)
+                    .border({ width: 0.8, color: $r('app.color.border_subtle') })
+                    .onClick(() => this.pasteFromClipboard())
+                  }
+                  .width('100%')
+
+                  TextArea({
+                    text: this.inputText,
+                    placeholder: '粘贴视频、网页或分享链接'
+                  })
                   .fontSize(13)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.accent_blue'))
-              }
-              .height(30)
-              .padding({ left: 12, right: 12 })
-              .backgroundColor($r('app.color.bg_secondary'))
-              .borderRadius(8)
-              .border({ width: 0.8, color: $r('app.color.border_subtle') })
-              .onClick(() => this.pasteFromClipboard())
-            }
-            .width('100%')
+                  .fontColor($r('app.color.text_primary'))
+                  .placeholderColor($r('app.color.text_muted'))
+                  .placeholderFont({ size: 12 })
+                  .height(88)
+                  .width('100%')
+                  .borderRadius(10)
+                  .backgroundColor($r('app.color.bg_primary'))
+                  .border({ width: 0.8, color: $r('app.color.border_subtle') })
+                  .onChange((v: string) => { this.inputText = v; })
 
-            TextArea({
-              text: this.inputText,
-              placeholder: '粘贴抖音 / B站 / YouTube 复制的分享链接或口令全文'
-            })
-              .fontSize(13)
-              .fontColor($r('app.color.text_primary'))
-              .placeholderColor($r('app.color.text_muted'))
-              .placeholderFont({ size: 12 })
-              .height(72)
-              .width('100%')
-              .borderRadius(10)
-              .backgroundColor($r('app.color.bg_primary'))
-              .border({ width: 0.8, color: $r('app.color.border_subtle') })
-              .onChange((v: string) => { this.inputText = v; })
+                  if (this.statusText) {
+                    Text(this.statusText)
+                    .fontSize(12)
+                    .fontColor(this.statusOk ? $r('app.color.success') : $r('app.color.warning'))
+                    .width('100%')
+                  }
 
-            if (this.statusText) {
-              Text(this.statusText)
-                .fontSize(12)
-                .fontColor(this.statusOk ? $r('app.color.success') : $r('app.color.warning'))
-                .width('100%')
-            }
-
-            Button() {
-              Row({ space: 6 }) {
-                if (this.busy) {
-                  LoadingProgress().width(16).height(16).color(Color.White)
+                  Button() {
+                    Row({ space: 6 }) {
+                      if (this.busy) {
+                        LoadingProgress().width(16).height(16).color(Color.White)
+                      }
+                      SymbolGlyph($r('sys.symbol.play_fill'))
+                      .fontSize(15)
+                      .fontColor([Color.White])
+                      Text(this.busy ? '解析中...' : '播放')
+                      .fontSize(14)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor(Color.White)
+                    }
+                  }
+                  .width('100%')
+                  .height(44)
+                  .backgroundColor($r('app.color.accent_blue'))
+                  .borderRadius(11)
+                  .enabled(!this.busy)
+                  .onClick(() => this.resolveAndPlay())
                 }
-                SymbolGlyph($r('sys.symbol.play_fill'))
-                  .fontSize(15)
-                  .fontColor([Color.White])
-                Text(this.busy ? '解析中...' : '提取并播放')
-                  .fontSize(14)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(Color.White)
+                .width('100%')
+                .padding(16)
+                .borderRadius(14)
+                .backgroundColor($r('app.color.bg_elevated'))
+                .border({ width: 0.8, color: $r('app.color.border_subtle') })
+                .alignItems(HorizontalAlign.Start)
               }
-            }
-            .width('100%')
-            .height(44)
-            .backgroundColor($r('app.color.accent_blue'))
-            .borderRadius(11)
-            .enabled(!this.busy)
-            .onClick(() => this.resolveAndPlay(false))
-
-            if (this.detectPlatform(this.inputText) === 'douyin') {
-              Button() {
-                Text(this.busy ? '处理中...' : '解析并离线保存至影库')
-                  .fontSize(13)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.text_secondary'))
-              }
+              .padding({ left: 18, right: 18, top: 14, bottom: 32 })
               .width('100%')
-              .height(38)
-              .backgroundColor($r('app.color.bg_elevated'))
-              .borderRadius(10)
-              .border({ width: 0.8, color: $r('app.color.border_subtle') })
-              .enabled(!this.busy)
-              .onClick(() => this.resolveAndPlay(true))
             }
+            .layoutWeight(1)
+            .backgroundColor($r('app.color.bg_primary'))
+            .align(Alignment.TopStart)
+            .scrollBar(BarState.Off)
           }
           .width('100%')
-          .padding(16)
-          .borderRadius(14)
-          .backgroundColor($r('app.color.bg_elevated'))
-          .border({ width: 0.8, color: $r('app.color.border_subtle') })
-          .alignItems(HorizontalAlign.Start)
-
-          // 说明
-          Column({ space: 6 }) {
-            Text('使用说明').fontSize(13).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
-            Text('· 抖音：粘贴 App 内「复制链接」得到的口令全文，可提取无水印直链播放，并可离线保存至本地影库')
-              .fontSize(11).lineHeight(17).fontColor($r('app.color.text_secondary'))
-            Text('· B 站：粘贴含 BV 号的视频链接，走免登录直链（清晰度 360P/480P，会员内容不支持）')
-              .fontSize(11).lineHeight(17).fontColor($r('app.color.text_secondary'))
-            Text('· YouTube：解析结果有时效性，若播放失败请回到本页重新提取；需要设备可访问相应网络')
-              .fontSize(11).lineHeight(17).fontColor($r('app.color.text_secondary'))
-          }
-          .width('100%')
-          .padding(16)
-          .borderRadius(14)
-          .backgroundColor($r('app.color.bg_elevated'))
-          .border({ width: 0.8, color: $r('app.color.border_subtle') })
-          .alignItems(HorizontalAlign.Start)
+          .height('100%')
+          .backgroundColor($r('app.color.bg_primary'))
         }
-        .padding({ left: 18, right: 18, top: 14, bottom: 32 })
-        .width('100%')
       }
+      .width('100%')
       .layoutWeight(1)
-      .backgroundColor($r('app.color.bg_primary'))
-      .align(Alignment.TopStart)
-      .scrollBar(BarState.Off)
     }
     .width('100%')
     .height('100%')

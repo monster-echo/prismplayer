@@ -1,4 +1,5 @@
 import { SubtitleLanguageMode, SubtitleStyleValues } from '../common/Types';
+import { PageShell } from '../components/PageShell';
 import { NavHeaderBar } from '../components/NavHeaderBar';
 import { SubtitleStyleEditor } from '../components/subtitle/SubtitleStyleEditor';
 import { AppStore } from '../services/AppStore';
@@ -55,48 +56,55 @@ struct SubtitlePrefsPage {
     Column() {
       NavHeaderBar({
         title: '字幕默认样式',
-        subtitle: this.savedTip || '新打开的视频会沿用这里的字号、底框与位置',
+        subtitle: this.savedTip || '新视频沿用这套样式',
         onBack: () => this.getUIContext().getRouter().back()
       })
 
-      Scroll() {
-        Column({ space: 16 }) {
-          SubtitleStyleEditor({
-            fontSizeFp: this.fontSizeFp,
-            bgEnabled: this.bgEnabled,
-            bgOpacityPercent: this.bgOpacityPercent,
-            verticalOffsetVp: this.verticalOffsetVp,
-            languageMode: this.languageMode,
-            showLanguageFilter: true,
-            onFontSizeChange: (v: number) => { this.fontSizeFp = v; },
-            onFontSizeCommit: () => this.persist(),
-            onBgToggle: (v: boolean) => {
-              this.bgEnabled = v;
-              this.persist();
-            },
-            onBgOpacityChange: (v: number) => { this.bgOpacityPercent = v; },
-            onBgOpacityCommit: () => this.persist(),
-            onOffsetChange: (v: number) => { this.verticalOffsetVp = v; },
-            onOffsetCommit: () => this.persist(),
-            onLanguageMode: (m: SubtitleLanguageMode) => {
-              this.languageMode = m;
-              this.persist();
-            }
-          })
+      Stack() {
+        PageShell({ maxWidth: 760 }) {
+          Column() {
 
-          Text('播放中也可以从播放器「字幕」入口打开样式页；两处编辑的是同一套默认值，不会再各存一份。')
-            .fontSize(10)
-            .lineHeight(16)
-            .fontColor($r('app.color.text_muted'))
-            .padding({ left: 4, right: 4 })
+            Scroll() {
+              Column({ space: 16 }) {
+                SubtitleStyleEditor({
+                  fontSizeFp: this.fontSizeFp,
+                  bgEnabled: this.bgEnabled,
+                  bgOpacityPercent: this.bgOpacityPercent,
+                  verticalOffsetVp: this.verticalOffsetVp,
+                  languageMode: this.languageMode,
+                  showLanguageFilter: true,
+                  onFontSizeChange: (v: number) => { this.fontSizeFp = v; },
+                  onFontSizeCommit: () => this.persist(),
+                  onBgToggle: (v: boolean) => {
+                    this.bgEnabled = v;
+                    this.persist();
+                  },
+                  onBgOpacityChange: (v: number) => { this.bgOpacityPercent = v; },
+                  onBgOpacityCommit: () => this.persist(),
+                  onOffsetChange: (v: number) => { this.verticalOffsetVp = v; },
+                  onOffsetCommit: () => this.persist(),
+                  onLanguageMode: (m: SubtitleLanguageMode) => {
+                    this.languageMode = m;
+                    this.persist();
+                  }
+                })
+
+              }
+              .padding({ left: 18, right: 18, top: 10, bottom: 36 })
+              .width('100%')
+            }
+            .layoutWeight(1)
+            .backgroundColor($r('app.color.bg_primary'))
+            .align(Alignment.TopStart)
+            .scrollBar(BarState.Off)
+          }
+          .width('100%')
+          .height('100%')
+          .backgroundColor($r('app.color.bg_primary'))
         }
-        .padding({ left: 18, right: 18, top: 10, bottom: 36 })
-        .width('100%')
       }
+      .width('100%')
       .layoutWeight(1)
-      .backgroundColor($r('app.color.bg_primary'))
-      .align(Alignment.TopStart)
-      .scrollBar(BarState.Off)
     }
     .width('100%')
     .height('100%')

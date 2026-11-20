@@ -12,12 +12,26 @@
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
+    "querySchemes": [
+      "feishu"
+    ],
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"
       },
       {
         "name": "ohos.permission.GET_NETWORK_INFO"
+      },
+      {
+        // 应用接续（跨端迁移播放现场）依赖该权限；用户在首次点击「在其它设备继续」时才被请求
+        "name": "ohos.permission.DISTRIBUTED_DATASYNC",
+        "reason": "$string:reason_distributed_datasync",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
       }
     ],
     "abilities": [
@@ -31,10 +45,20 @@
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "launchType": "singleton",
+        // 应用接续：本 Ability 允许迁移到同账号可信设备
+        "continueType": [
+          "tech.zhongbei.prismplayer"
+        ],
         "supportWindowMode": [
           "fullscreen",
           "split",
           "floating"
+        ],
+        "metadata": [
+          {
+            "name": "ohos.ability.shortcuts",
+            "resource": "$profile:shortcuts_config"
+          }
         ],
         "skills": [
           {
@@ -59,6 +83,22 @@
                 "type": "video/*"
               }
             ]
+          },
+          {
+            // App Linking 回流：分享出去的链接直接落到播放页
+            "entities": [
+              "entity.system.browsable"
+            ],
+            "actions": [
+              "ohos.want.action.viewData"
+            ],
+            "uris": [
+              {
+                "scheme": "https",
+                "host": "prismplayer.zhongbei.tech",
+                "pathStartWith": "/link"
+              }
+            ]
           }
         ]
       }
@@ -73,6 +113,20 @@
           {
             "name": "ohos.extension.backup",
             "resource": "$profile:backup_config"
+          }
+        ]
+      },
+      {
+        "name": "EntryFormAbility",
+        "srcEntry": "./ets/entryformability/EntryFormAbility.ets",
+        "label": "$string:widget_continue_display_name",
+        "description": "$string:widget_continue_desc",
+        "type": "form",
+        "exported": false,
+        "metadata": [
+          {
+            "name": "ohos.extension.form",
+            "resource": "$profile:form_config"
           }
         ]
       }

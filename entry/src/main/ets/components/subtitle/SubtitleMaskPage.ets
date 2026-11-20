@@ -47,7 +47,7 @@ export struct SubtitleMaskPage {
     Column() {
       SubtitlePageHeader({
         title: '内嵌字幕遮挡',
-        caption: '英语学习模式：盖住烧录硬字幕，硬解 / 软解通用',
+        caption: '盖住画面硬字幕，长按可临时露出',
         onBack: () => this.onBack(),
         onClose: () => this.onClose()
       })
@@ -57,7 +57,7 @@ export struct SubtitleMaskPage {
           Column({ space: 10 }) {
             SubtitleSectionHeader({
               title: '遮挡范围预览',
-              note: '黑条按画面比例定位，换设备或切换画幅时仍能对齐'
+              note: '按画面比例保存'
             })
             Stack({ alignContent: Alignment.TopStart }) {
               Column()
@@ -105,7 +105,7 @@ export struct SubtitleMaskPage {
           Column({ space: 14 }) {
             SubtitleToggleRow({
               title: '遮挡内嵌字幕',
-              desc: '关闭后黑条立即消失；长按画面可临时露出字幕',
+              desc: '关闭后立即隐藏，长按可临时露出',
               value: this.session.maskEnabled,
               onChange: (v: boolean) => this.session.setMaskEnabled(v)
             })
@@ -138,13 +138,13 @@ export struct SubtitleMaskPage {
             .width('100%')
 
             if (!this.session.canDetectBurnedInSubtitle()) {
-              Text('远程流媒体视频暂不支持自动识别，请手动调整遮挡范围。')
+              Text('远程视频请手动调整。')
                 .fontSize(10)
                 .lineHeight(15)
                 .fontColor('#6B7280')
             }
 
-            Text('手动调整会回到播放画面：拖动黑条上下边缘确定范围，再点「完成」保存。')
+            Text('回到画面拖动上下边缘，点「完成」保存。')
               .fontSize(10)
               .lineHeight(16)
               .fontColor('#6B7280')
@@ -159,7 +159,7 @@ export struct SubtitleMaskPage {
           Column({ space: 10 }) {
             SubtitleSectionHeader({
               title: '默认行为',
-              note: '遮挡开关按视频单独记忆；也可以把当前选择设为新视频的默认值'
+              note: '按视频记忆，可设为新视频默认'
             })
             Button('设为新视频默认')
               .width('100%')
@@ -177,11 +177,6 @@ export struct SubtitleMaskPage {
           .border({ width: 0.7, color: '#1FFFFFFF' })
           .alignItems(HorizontalAlign.Start)
 
-          Text('遮挡是播放器叠加层，与底层解码引擎无关；自动识别仅对本地视频启用，会抽样画面判断字幕区域。')
-            .fontSize(10)
-            .lineHeight(16)
-            .fontColor('#6B7280')
-            .padding({ left: 4, right: 4 })
         }
         .padding({ left: 18, right: 18, top: 8, bottom: 36 })
         .width('100%')

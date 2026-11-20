@@ -10,6 +10,8 @@ export struct PosterCard {
   @Param progressRatio: number = 0; // 0..1
   @Param episodeCountLabel: string = '';
   @Param onSelect: () => void = () => {};
+  /** 2in1 右键菜单里的「立即播放」 */
+  @Param onPlay: () => void = () => {};
 
   @Local hovered: boolean = false;
   @Local imageFailed: boolean = false;
@@ -195,6 +197,35 @@ export struct PosterCard {
       .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
+    .focusable(true)
     .onClick(() => this.onSelect())
+    .bindContextMenu(this.contextMenuBuilder(), ResponseType.RightClick, {
+      backgroundColor: $r('app.color.menu_bg'),
+      borderRadius: 14,
+      outlineColor: $r('app.color.menu_border'),
+      outlineWidth: 1
+    })
+  }
+
+  @Builder
+  menuAction(label: string, action: () => void) {
+    Text(label)
+      .fontSize(14)
+      .fontColor($r('app.color.text_primary'))
+      .height(40)
+      .width('100%')
+      .padding({ left: 12, right: 12 })
+      .borderRadius(8)
+      .onClick(action)
+  }
+
+  @Builder
+  contextMenuBuilder() {
+    Column({ space: 2 }) {
+      this.menuAction('立即播放', () => this.onPlay())
+      this.menuAction('查看详情', () => this.onSelect())
+    }
+    .width(148)
+    .padding(6)
   }
 }

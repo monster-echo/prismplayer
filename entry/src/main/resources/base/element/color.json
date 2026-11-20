@@ -2,7 +2,7 @@
   "color": [
     {
       "name": "start_window_background",
-      "value": "#F1F3F6"
+      "value": "#0B0C10"
     },
     {
       "name": "bg_primary",
@@ -19,6 +19,26 @@
     {
       "name": "bg_glass",
       "value": "#D9FFFFFF"
+    },
+    {
+      "name": "menu_bg",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "menu_border",
+      "value": "#29000000"
+    },
+    {
+      "name": "nav_active_bg",
+      "value": "#142563EB"
+    },
+    {
+      "name": "nav_active_border",
+      "value": "#3D2563EB"
+    },
+    {
+      "name": "nav_active_fg",
+      "value": "#1D4ED8"
     },
     {
       "name": "border_subtle",

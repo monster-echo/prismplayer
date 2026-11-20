@@ -31,3 +31,12 @@ local.properties
 
 # Local release assets — never commit
 release/
+
+# 本地截图 / 演示素材，不上传
+docs/screenshots/
+
+# 文档与截图只在本地保留，不随代码上传
+docs/
+
+# 应用市场素材（本地保留，不上传）
+store-screenshots/

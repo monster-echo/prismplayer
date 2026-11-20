@@ -1,4 +1,5 @@
 import { rcp } from '@kit.RemoteCommunicationKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { Formatters } from '../common/Formatters';
 import { MediaItem, MediaSource, RemoteFileEntry, SubtitleTrackOption } from '../common/Types';
 import { WebDavTestResult } from './WebDavClient';
@@ -11,6 +12,8 @@ interface PlexDirectoryObj {
 
 interface PlexStreamObj {
   streamType?: number;
+  id?: number;
+  index?: number;
   codec?: string;
   language?: string;
   languageCode?: string;
@@ -158,22 +161,88 @@ export class PlexClient {
   }
 
   private static findSubtitleTracks(source: MediaSource, part: PlexPartObj): SubtitleTrackOption[] {
-    const out: SubtitleTrackOption[] = [];
-    if (!part.Stream) return out;
+    const external: SubtitleTrackOption[] = [];
+    const embedded: SubtitleTrackOption[] = [];
+    if (!part.Stream) return external;
     for (let i = 0; i < part.Stream.length; i++) {
       const s = part.Stream[i];
-      if (s.streamType === 3 && s.key) {
+      if (s.streamType !== 3) continue;
+      const codec = (s.codec || '').toLowerCase();
+      // PGS/VobSub are bitmap subtitles; they cannot be rendered by the text cue overlay.
+      if (codec && !['srt', 'subrip', 'ass', 'ssa', 'vtt', 'webvtt', 'mov_text', 'text', 'txt'].includes(codec)) {
+        continue;
+      }
+      {
+        const streamPath = s.key || (s.id !== undefined ? `/library/streams/${s.id}` : '');
+        if (!streamPath) continue;
         const rawTag = s.languageCode || s.language || s.displayTitle || s.title || '';
-        const detected = Formatters.detectSubtitleLanguage(rawTag, out.length);
-        out.push({
+        const detected = Formatters.detectSubtitleLanguage(rawTag, external.length + embedded.length);
+        const track: SubtitleTrackOption = {
           lang: detected.lang,
           label: s.displayTitle || s.language || detected.label,
-          url: PlexClient.appendToken(source.baseUrl, s.key, source.password),
+          url: PlexClient.appendToken(source.baseUrl, streamPath, source.password),
           format: s.codec || ''
-        });
+        };
+        if (s.key) external.push(track);
+        else embedded.push(track);
       }
     }
-    return out;
+    // External sidecars are directly downloadable; embedded streams may need server transcoding.
+    return external.length > 0 ? external : embedded;
+  }
+
+  /** Re-read one item's Plex metadata so subtitles added after the library scan are discovered. */
+  static async fetchText(url: string, source?: MediaSource): Promise<string> {
+    const queryIndex = url.indexOf('?');
+    const base = queryIndex >= 0 ? url.substring(0, queryIndex) : url;
+    const query = queryIndex >= 0 ? url.substring(queryIndex) : '';
+    const variants = [url, `${base}.srt${query}`, `${base}.vtt${query}`, `${url}${query ? '&' : '?'}encoding=utf-8`];
+    let lastStatus = 0;
+    for (let i = 0; i < variants.length; i++) {
+      const req = new rcp.Request(variants[i], 'GET');
+      req.headers = {
+        'Accept': 'text/plain, */*',
+        'X-Plex-Client-Identifier': 'PrismPlayerHarmony',
+        'X-Plex-Product': 'PrismPlayer'
+      };
+      if (source && source.allowInsecureTls) {
+        req.configuration = {
+          security: { remoteValidation: 'skip' },
+          transfer: { timeout: { connectMs: 8000, transferMs: 15000 } }
+        };
+      }
+      const resp = await PlexClient.getSession().fetch(req);
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        return resp.toString() || '';
+      }
+      lastStatus = resp.statusCode;
+    }
+    throw new Error(`HTTP ${lastStatus}`);
+  }
+
+  static async probeSubtitleTracks(source: MediaSource, item: MediaItem): Promise<SubtitleTrackOption[]> {
+    const prefix = `${source.id}_plex_`;
+    if (!item.id.startsWith(prefix)) {
+      return [];
+    }
+    const ratingKey = item.id.substring(prefix.length);
+    if (!ratingKey) return [];
+    const resp = await PlexClient.getJson(source, `/library/metadata/${ratingKey}?includeStreams=1`);
+    const meta = resp.MediaContainer?.Metadata && resp.MediaContainer.Metadata.length > 0
+      ? resp.MediaContainer.Metadata[0]
+      : undefined;
+    const media = meta && meta.Media && meta.Media.length > 0 ? meta.Media[0] : undefined;
+    const part = media && media.Part && media.Part.length > 0 ? media.Part[0] : undefined;
+    const streams = part && part.Stream ? part.Stream : [];
+    hilog.info(0x0001, 'PrismPlex', 'metadata streams=%{public}d', streams.length);
+    for (let i = 0; i < streams.length; i++) {
+      const s = streams[i];
+      if (s.streamType === 3) {
+        hilog.info(0x0001, 'PrismPlex', 'sub stream codec=%{public}s key=%{public}s id=%{public}d lang=%{public}s',
+          s.codec || '', s.key ? 'yes' : 'no', s.id || 0, s.languageCode || s.language || '');
+      }
+    }
+    return part ? PlexClient.findSubtitleTracks(source, part) : [];
   }
 
   static async listDirectory(source: MediaSource, dirPath: string): Promise<RemoteFileEntry[]> {

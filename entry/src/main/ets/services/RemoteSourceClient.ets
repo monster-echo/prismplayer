@@ -46,6 +46,9 @@ export class RemoteSourceClient {
     if (source && (source.type === 's3' || urlOrPath.startsWith('s3://'))) {
       return S3Client.fetchText(urlOrPath, source);
     }
+    if (source && source.type === 'plex') {
+      return PlexClient.fetchText(urlOrPath, source);
+    }
     return WebDavClient.fetchText(urlOrPath, source);
   }
 

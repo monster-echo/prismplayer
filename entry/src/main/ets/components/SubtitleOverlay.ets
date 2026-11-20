@@ -1,17 +1,19 @@
-import { SubtitleCue, SubtitleLanguageMode } from '../common/Types';
+import { SubtitleCue } from '../common/Types';
+import { DEFAULT_PICTURE_RECT, PictureRect } from '../common/VideoLayout';
 import { SubtitleEngine } from '../services/SubtitleEngine';
+import { SubtitleSession } from '../services/SubtitleSession';
 
 @ComponentV2
 export struct SubtitleOverlay {
   @Param cues: SubtitleCue[] = [];
-  @Param fontSizeFp: number = 20;
-  @Param languageMode: SubtitleLanguageMode = 'all';
-  @Param bgEnabled: boolean = true;
-  @Param bgOpacityPercent: number = 35;
-  @Param verticalOffsetVp: number = 0;
+  @Param bottomInsetVp: number = 16;
+  @Param picture: PictureRect = DEFAULT_PICTURE_RECT;
+  // Observe the session directly so appearance changes are reflected even when the parent
+  // player is busy with decoding/gesture state.
+  private session: SubtitleSession = SubtitleSession.getInstance();
 
   private getFilteredText(cue: SubtitleCue): string {
-    return SubtitleEngine.filterCueLines(cue.text, this.languageMode);
+    return SubtitleEngine.filterCueLines(cue.text, this.session.languageMode);
   }
 
   private hasVisibleText(cue: SubtitleCue): boolean {
@@ -31,8 +33,8 @@ export struct SubtitleOverlay {
   }
 
   private bubbleBackgroundColor(): string | Color {
-    if (!this.bgEnabled) return Color.Transparent;
-    const clamped = Math.min(100, Math.max(0, Math.round(this.bgOpacityPercent)));
+    if (!this.session.bgEnabled) return Color.Transparent;
+    const clamped = Math.min(100, Math.max(0, Math.round(this.session.bgOpacityPercent)));
     const alpha = Math.round(clamped * 255 / 100).toString(16).padStart(2, '0');
     return `#${alpha}000000`;
   }
@@ -40,7 +42,7 @@ export struct SubtitleOverlay {
   @Builder
   renderCueBubble(cue: SubtitleCue) {
     Text(this.getFilteredText(cue))
-      .fontSize(this.fontSizeFp)
+      .fontSize(this.session.fontFp)
       .fontWeight(cue.isBold ? FontWeight.Bold : FontWeight.Medium)
       .fontStyle(cue.isItalic ? FontStyle.Italic : FontStyle.Normal)
       .fontColor(cue.colorHex || '#FFFFFF')
@@ -66,7 +68,7 @@ export struct SubtitleOverlay {
           }, (cue: SubtitleCue) => `${cue.index}_${cue.startMs}`)
         }
         .width('100%')
-        .padding({ top: 76, left: 24, right: 24 })
+        .padding({ top: 24, left: 24, right: 24 })
         .alignItems(HorizontalAlign.Center)
 
         Blank()
@@ -90,11 +92,12 @@ export struct SubtitleOverlay {
           }, (cue: SubtitleCue) => `${cue.index}_${cue.startMs}`)
         }
         .width('100%')
-        .padding({ bottom: 68 + this.verticalOffsetVp, left: 24, right: 24 })
+        .padding({ bottom: this.bottomInsetVp + this.session.verticalOffsetVp, left: 24, right: 24 })
         .alignItems(HorizontalAlign.Center)
       }
-      .width('100%')
-      .height('100%')
+      .width(this.picture.widthVp)
+      .height(this.picture.heightVp)
+      .position({ x: this.picture.leftVp, y: this.picture.topVp })
       .hitTestBehavior(HitTestMode.None)
     }
   }

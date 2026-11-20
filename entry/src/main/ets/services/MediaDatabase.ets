@@ -21,7 +21,7 @@ export class MediaDatabase {
   private rdb: relationalStore.RdbStore | null = null;
   private prefs: preferences.Preferences | null = null;
 
-  async init(context: common.UIAbilityContext): Promise<void> {
+  async init(context: common.Context): Promise<void> {
     if (!this.prefs) {
       this.prefs = await preferences.getPreferences(context, AppConstants.PREFS_NAME);
     }
@@ -158,6 +158,7 @@ export class MediaDatabase {
       tmdbApiHost: AppConstants.DEFAULT_TMDB_HOST,
       tmdbImageBase: AppConstants.DEFAULT_TMDB_IMAGE_BASE,
       autoSkipIntroSec: 0,
+      autoSkipOutroSec: 0,
       subtitleFontSizeFp: 20,
       subtitleLanguageMode: 'all',
       subtitleBgEnabled: true,
@@ -184,6 +185,7 @@ export class MediaDatabase {
       tmdbApiHost: await this.prefs.get('tmdbApiHost', defaults.tmdbApiHost) as string,
       tmdbImageBase: await this.prefs.get('tmdbImageBase', defaults.tmdbImageBase) as string,
       autoSkipIntroSec: await this.prefs.get('autoSkipIntroSec', defaults.autoSkipIntroSec) as number,
+      autoSkipOutroSec: await this.prefs.get('autoSkipOutroSec', defaults.autoSkipOutroSec) as number,
       subtitleFontSizeFp: await this.prefs.get('subtitleFontSizeFp', defaults.subtitleFontSizeFp) as number,
       subtitleLanguageMode: (await this.prefs.get('subtitleLanguageMode', defaults.subtitleLanguageMode) as string) as SubtitleLanguageMode,
       subtitleBgEnabled: await this.prefs.get('subtitleBgEnabled', defaults.subtitleBgEnabled) as boolean,
@@ -210,6 +212,7 @@ export class MediaDatabase {
     await this.prefs.put('tmdbApiHost', settings.tmdbApiHost);
     await this.prefs.put('tmdbImageBase', settings.tmdbImageBase);
     await this.prefs.put('autoSkipIntroSec', settings.autoSkipIntroSec);
+    await this.prefs.put('autoSkipOutroSec', settings.autoSkipOutroSec);
     await this.prefs.put('subtitleFontSizeFp', settings.subtitleFontSizeFp);
     await this.prefs.put('subtitleLanguageMode', settings.subtitleLanguageMode);
     await this.prefs.put('subtitleBgEnabled', settings.subtitleBgEnabled);
@@ -241,6 +244,30 @@ export class MediaDatabase {
   }
 
   async setFlag(key: string, value: boolean): Promise<void> {
+    if (!this.prefs) return;
+    await this.prefs.put(key, value);
+    await this.prefs.flush();
+  }
+
+  async getNumberPref(key: string, def: number): Promise<number> {
+    if (!this.prefs) return def;
+    const v: preferences.ValueType = await this.prefs.get(key, def);
+    return typeof v === 'number' ? v : def;
+  }
+
+  async setNumberPref(key: string, value: number): Promise<void> {
+    if (!this.prefs) return;
+    await this.prefs.put(key, value);
+    await this.prefs.flush();
+  }
+
+  async getStringPref(key: string, def: string): Promise<string> {
+    if (!this.prefs) return def;
+    const v: preferences.ValueType = await this.prefs.get(key, def);
+    return typeof v === 'string' ? v : def;
+  }
+
+  async setStringPref(key: string, value: string): Promise<void> {
     if (!this.prefs) return;
     await this.prefs.put(key, value);
     await this.prefs.flush();

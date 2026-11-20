@@ -185,6 +185,10 @@ export interface PlayerLaunchParams {
   playbackRate?: number;
 }
 
+export interface LegalDocParams {
+  docType: 'privacy' | 'agreement';
+}
+
 export interface MediaDetailParams {
   movie?: MediaItem;
   series?: SeriesGroup;
@@ -197,10 +201,6 @@ export interface SourceFormParams {
 export interface SourceBrowserParams {
   source: MediaSource;
   initialPath?: string;
-}
-
-export interface LegalDocParams {
-  docType: 'privacy' | 'agreement';
 }
 
 export type VaultEntryKind = 'series' | 'movie' | 'folder';
@@ -278,6 +278,7 @@ export interface AppSettings {
   tmdbApiHost: string;
   tmdbImageBase: string;
   autoSkipIntroSec: number;
+  autoSkipOutroSec: number;
   subtitleFontSizeFp: number;
   subtitleLanguageMode: SubtitleLanguageMode;
   subtitleBgEnabled: boolean;

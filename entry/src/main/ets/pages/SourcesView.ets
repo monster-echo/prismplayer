@@ -1,5 +1,7 @@
 import { BreakpointType } from '../common/Constants';
+import { Layout } from '../common/Layout';
 import { MediaArtwork } from '../common/MediaArtwork';
+import { appMenuOptions } from '../common/MenuSurface';
 import { MediaItem, MediaSource, PlayerLaunchParams } from '../common/Types';
 import { AppStore } from '../services/AppStore';
 import { RemoteSourceClient } from '../services/RemoteSourceClient';
@@ -7,6 +9,7 @@ import { RemoteSourceClient } from '../services/RemoteSourceClient';
 @ComponentV2
 export struct SourcesView {
   @Param breakpoint: BreakpointType = 'sm';
+  @Param contentWidth: number = 360;
   @Param onOpenEditor: (editing: MediaSource | null) => void = () => {};
   @Param onBrowseSource: (source: MediaSource) => void = () => {};
   @Param onRequestPro: () => void = () => {};
@@ -62,7 +65,7 @@ export struct SourcesView {
               .fontSize(26)
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_primary'))
-            Text('抖音 · S3 · YouTube · SMB · Plex')
+            Text('本地 · WebDAV · SMB · Plex · 链接')
               .fontSize(12)
               .fontColor($r('app.color.text_muted'))
               .maxLines(1)
@@ -88,13 +91,13 @@ export struct SourcesView {
           .borderRadius(10)
           .bindMenu([
             {
-              value: '粘贴抖音 / B站 / YouTube 链接（提取播放）',
+              value: '粘贴视频链接（尝试播放）',
               action: () => {
                 this.getUIContext().getRouter().pushUrl({ url: 'pages/OnlineMediaPage' });
               }
             },
             {
-              value: '连接网络 / 云存储 / YouTube / NAS',
+              value: '连接网络 / 云存储 / NAS',
               action: () => {
                 if (!this.store.canAddSource()) {
                   this.onRequestPro();
@@ -107,7 +110,7 @@ export struct SourcesView {
               value: '导入手机或本地视频',
               action: () => { this.store.importLocalVideos(); }
             }
-          ])
+          ], appMenuOptions())
         }
         .width('100%')
 
@@ -164,13 +167,16 @@ export struct SourcesView {
             .onClick(() => this.onOpenEditor(null))
           }
           .width('100%')
+          .constraintSize({ maxWidth: 640 })
+          .alignSelf(ItemAlign.Center)
           .padding(32)
           .borderRadius(16)
           .backgroundColor($r('app.color.bg_elevated'))
           .border({ width: 0.8, color: $r('app.color.fill_strong') })
         } else {
-          Column({ space: 12 }) {
+          Grid() {
             ForEach(this.store.sources, (src: MediaSource) => {
+              GridItem() {
               Column({ space: 12 }) {
                 Row({ space: 12 }) {
                   Column() {
@@ -235,7 +241,7 @@ export struct SourcesView {
                   Button() {
                     Row({ space: 5 }) {
                       SymbolGlyph($r('sys.symbol.folder_fill')).fontSize(13).fontColor([Color.White])
-                      Text(src.type === 'youtube' ? '浏览视频' : '浏览目录').fontSize(12).fontColor(Color.White)
+                      Text('浏览目录').fontSize(12).fontColor(Color.White)
                     }
                   }
                   .height(34)
@@ -285,7 +291,7 @@ export struct SourcesView {
                       value: '移除此片源',
                       action: () => this.confirmDeleteSource(src)
                     }
-                  ])
+                  ], appMenuOptions())
                 }
                 .width('100%')
               }
@@ -294,17 +300,27 @@ export struct SourcesView {
               .borderRadius(14)
               .backgroundColor($r('app.color.bg_elevated'))
               .border({ width: 0.8, color: $r('app.color.fill_strong') })
+              }
             }, (src: MediaSource) => src.id)
           }
+          .columnsTemplate(this.contentWidth >= 860 ? '1fr 1fr' : '1fr')
+          .columnsGap(12)
+          .rowsGap(12)
           .width('100%')
         }
       }
-      .padding({ left: 20, right: 20, top: 16, bottom: 32 })
+      .padding({
+        left: Layout.gutter(this.breakpoint),
+        right: Layout.gutter(this.breakpoint),
+        top: 16,
+        bottom: 32
+      })
       .width('100%')
+      .constraintSize({ maxWidth: Layout.contentMax(this.breakpoint) + Layout.gutter(this.breakpoint) * 2 })
     }
     .width('100%')
     .height('100%')
-    .align(Alignment.TopStart)
+    .align(Alignment.Top)
     .backgroundColor($r('app.color.bg_primary'))
     .scrollBar(BarState.Off)
   }

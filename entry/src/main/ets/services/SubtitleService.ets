@@ -22,6 +22,11 @@ interface ScoredSubtitle {
   score: number;
 }
 
+interface EpisodeMeta {
+  season: number;
+  episode: number;
+}
+
 interface SubdlSubtitleEntry {
   release_name?: string;
   name?: string;
@@ -70,6 +75,8 @@ export class SubtitleService {
   private static ttsEngine: textToSpeech.TextToSpeechEngine | null = null;
   private static ttsCreating: boolean = false;
   private static lastSpokenText: string = '';
+  private static translationPending: Set<string> = new Set<string>();
+  private static translationFailed: Set<string> = new Set<string>();
 
   private static getSession(): rcp.Session {
     if (!SubtitleService.session) {
@@ -100,12 +107,17 @@ export class SubtitleService {
     for (let i = 0; i < subdl.length; i++) merged.push(subdl[i]);
     const osResults = await SubtitleService.searchOpenSubtitlesProvider(cleanQ, langFilter, seasonNo, episodeNo).catch(() => [] as OnlineSubtitleResult[]);
     for (let i = 0; i < osResults.length; i++) merged.push(osResults[i]);
+    const assrt = await SubtitleService.searchAssrt(cleanQ, langFilter, seasonNo, episodeNo).catch((e: Error) => {
+      hilog.error(0x0001, 'PrismSub', 'assrt error %{public}s', e.message);
+      return [] as OnlineSubtitleResult[];
+    });
+    for (let i = 0; i < assrt.length; i++) merged.push(assrt[i]);
     const zimuku = await SubtitleService.searchZimuku(cleanQ).catch((e: Error) => {
       hilog.error(0x0001, 'PrismSub', 'zimuku error %{public}s', e.message);
       return [] as OnlineSubtitleResult[];
     });
     for (let i = 0; i < zimuku.length; i++) merged.push(zimuku[i]);
-    hilog.info(0x0001, 'PrismSub', 'searchAll q=%{public}s se=%{public}d-%{public}d subdl=%{public}d os=%{public}d zimuku=%{public}d', cleanQ, seasonNo, episodeNo, subdl.length, osResults.length, zimuku.length);
+    hilog.info(0x0001, 'PrismSub', 'searchAll q=%{public}s se=%{public}d-%{public}d subdl=%{public}d os=%{public}d assrt=%{public}d zimuku=%{public}d', cleanQ, seasonNo, episodeNo, subdl.length, osResults.length, assrt.length, zimuku.length);
     return SubtitleService.rankSubtitleResults(merged, videoFileName, cleanQ, langFilter);
   }
 
@@ -220,6 +232,63 @@ export class SubtitleService {
   }
 
   /**
+   * Assrt（射手网伪）中文源：搜索页直接给出 /download/{id}/{name}.zip 直链，
+   * 支持中文/双语 ASS/SRT，不需要登录或人机验证。
+   */
+  private static async searchAssrt(
+    query: string,
+    langFilter: string,
+    seasonNo: number = 0,
+    episodeNo: number = 0
+  ): Promise<OnlineSubtitleResult[]> {
+    const results: OnlineSubtitleResult[] = [];
+    const seToken = seasonNo > 0 && episodeNo > 0
+      ? ` S${('0' + seasonNo).slice(-2)}E${('0' + episodeNo).slice(-2)}`
+      : '';
+    const url = `https://assrt.net/sub/?searchword=${encodeURIComponent(query + seToken)}`;
+    const req = new rcp.Request(url, 'GET', {
+      'User-Agent': 'Mozilla/5.0 (Linux; Android 12; HarmonyOS NEXT) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml',
+      'Accept-Language': 'zh-CN,zh;q=0.9'
+    });
+    req.configuration = {
+      security: { remoteValidation: 'skip' },
+      transfer: { timeout: { connectMs: 6000, transferMs: 12000 } }
+    };
+    const resp = await SubtitleService.getSession().fetch(req);
+    if (resp.statusCode < 200 || resp.statusCode >= 300) return results;
+    const html = resp.toString() || '';
+    const blocks = html.split('class="subitem"');
+    for (let i = 1; i < blocks.length && results.length < 12; i++) {
+      const block = blocks[i];
+      const titleMatch = block.match(/class="introtitle"[^>]*>([\s\S]*?)<\/a>/);
+      const dlMatch = block.match(/\/download\/\d+\/[^'"]+/);
+      if (!titleMatch || !dlMatch) continue;
+      const rawTitle = titleMatch[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
+      if (!rawTitle) continue;
+      const hasZh = /sublangchs|sublangcht/.test(block);
+      const hasEn = /sublangeng/.test(block);
+      if (langFilter === 'zh' && !hasZh) continue;
+      if (langFilter === 'en' && !hasEn) continue;
+      const formatMatch = block.match(/格式：\s*([^<]+)/);
+      const formatText = formatMatch ? formatMatch[1].trim().toUpperCase() : rawTitle.toUpperCase();
+      const downloadPath = dlMatch[0];
+      const idMatch = downloadPath.match(/\/download\/(\d+)\//);
+      const lang = hasZh && hasEn ? 'zh-en' : (hasZh ? 'zh' : 'en');
+      results.push({
+        id: `assrt_${idMatch ? idMatch[1] : results.length}`,
+        title: rawTitle,
+        language: lang,
+        langLabel: lang === 'zh-en' ? '中英双语' : (lang === 'zh' ? '中文' : '英文'),
+        format: formatText.includes('ASS') || formatText.includes('SSA') ? 'ASS' : 'SRT',
+        downloadUrl: `https://assrt.net${downloadPath}`,
+        sourceName: '射手网'
+      });
+    }
+    return results;
+  }
+
+  /**
    * 字幕库（zimuku）中文源：搜索页 HTML 解析出详情链接（直链下载需两跳，在
    * downloadSubtitleText 内完成）。站点有反爬策略，解析失败时静默降级为空。
    */
@@ -278,6 +347,34 @@ export class SubtitleService {
     return false;
   }
 
+  /** Parses SxxExx / Sxx.xx / 1x02 / EP02 / 第2集 / 01002 / Season 1 from a result title. */
+  private static extractEpisodeMeta(title: string): EpisodeMeta {
+    const lower = (title || '').toLowerCase();
+    let m = lower.match(/s(\d{1,2})[ ._-]?e(\d{1,3})/);
+    if (m) return { season: parseInt(m[1], 10), episode: parseInt(m[2], 10) };
+    m = lower.match(/(\d{1,2})x(\d{1,3})/);
+    if (m) return { season: parseInt(m[1], 10), episode: parseInt(m[2], 10) };
+    m = lower.match(/s(\d{1,2})[ .](\d{1,3})/);
+    if (m) return { season: parseInt(m[1], 10), episode: parseInt(m[2], 10) };
+    m = lower.match(/第\s*(\d{1,3})\s*[集话]/);
+    if (m) return { season: 0, episode: parseInt(m[1], 10) };
+    m = lower.match(/[._\s-]e(?:p)?(\d{1,3})(?:[._\s-]|$)/);
+    if (m) return { season: 0, episode: parseInt(m[1], 10) };
+    m = lower.match(/\b0(\d{1,2})(\d{3})\b/);
+    if (m) return { season: parseInt(m[1], 10), episode: parseInt(m[2], 10) };
+    m = lower.match(/season[ ._-]?(\d{1,2})/);
+    if (m) return { season: parseInt(m[1], 10), episode: 0 };
+    m = lower.match(/(?:^|[ ._-])s(\d{1,2})(?:[ ._-]|$)/);
+    if (m) return { season: parseInt(m[1], 10), episode: 0 };
+    return { season: 0, episode: 0 };
+  }
+
+  static isExactEpisodeResult(title: string, seasonNo: number, episodeNo: number): boolean {
+    if (seasonNo <= 0 || episodeNo <= 0) return false;
+    const meta = SubtitleService.extractEpisodeMeta(title);
+    return meta.season === seasonNo && meta.episode === episodeNo;
+  }
+
   /** 季集感知评分：季集 token 命中 > 中文/双语 > ASS 特效格式 > 标题词重叠。 */
   static rankSubtitleResults(
     results: OnlineSubtitleResult[],
@@ -286,17 +383,29 @@ export class SubtitleService {
     langFilter: string = 'all'
   ): OnlineSubtitleResult[] {
     const videoLower = (videoFileName || '').toLowerCase();
-    const seMatch = videoLower.match(/s\d{1,2}e\d{1,3}/);
-    const seToken = seMatch ? seMatch[0] : '';
+    const seMatch = videoLower.match(/s(\d{1,2})[ ._-]?e(\d{1,3})/);
+    const targetSeason = seMatch ? parseInt(seMatch[1], 10) : 0;
+    const targetEpisode = seMatch ? parseInt(seMatch[2], 10) : 0;
     const qTokens = query.toLowerCase().split(/[^a-z0-9\u4e00-\u9fa5]+/).filter(t => t.length > 1);
 
-    const candidates = langFilter === 'all'
-      ? results
-      : results.filter((r: OnlineSubtitleResult) => SubtitleService.matchesLanguageFilter(r.language, langFilter));
+    const candidates = results.filter((r: OnlineSubtitleResult) => {
+      if (langFilter !== 'all' && !SubtitleService.matchesLanguageFilter(r.language, langFilter)) return false;
+      if (targetSeason > 0) {
+        const meta = SubtitleService.extractEpisodeMeta(r.title);
+        // Never show an explicitly different season; same-season packs remain as fallback.
+        if (meta.season > 0 && meta.season !== targetSeason) return false;
+      }
+      return true;
+    });
     const scored: ScoredSubtitle[] = candidates.map((r: OnlineSubtitleResult): ScoredSubtitle => {
       const n = r.title.toLowerCase();
       let score = 0;
-      if (seToken && n.includes(seToken)) score += 4;
+      const meta = SubtitleService.extractEpisodeMeta(n);
+      if (targetSeason > 0 && targetEpisode > 0) {
+        if (meta.season === targetSeason && meta.episode === targetEpisode) score += 14;
+        else if (meta.season === targetSeason && meta.episode === 0) score += 3;
+        else if (meta.season === targetSeason) score += 1;
+      }
       if (r.language === 'zh' || r.language === 'zh-en') score += 2;
       else if (r.language === 'en') score += 1;
       if (r.format === 'ASS') score += 1;
@@ -308,10 +417,17 @@ export class SubtitleService {
     });
     scored.sort((a, b) => b.score - a.score);
 
+    // Prefer exact episode results when they exist; season packs are only a fallback.
+    let exact: ScoredSubtitle[] = [];
+    if (targetSeason > 0 && targetEpisode > 0) {
+      exact = scored.filter((s: ScoredSubtitle) => SubtitleService.isExactEpisodeResult(s.result.title, targetSeason, targetEpisode));
+    }
+    const finalScored = exact.length > 0 ? exact : scored;
+
     const out: OnlineSubtitleResult[] = [];
     const seenKey = new Set<string>();
-    for (let i = 0; i < scored.length; i++) {
-      const r = scored[i].result;
+    for (let i = 0; i < finalScored.length; i++) {
+      const r = finalScored[i].result;
       const key = `${r.title}|${r.language}`;
       if (seenKey.has(key)) continue;
       seenKey.add(key);
@@ -324,13 +440,22 @@ export class SubtitleService {
    * 下载并返回字幕文本。字幕库来源需要两跳：先抓详情页提取压缩包直链，
    * 下载 ZIP 后解压取第一条 .srt / .ass / .ssa。cacheDir 由调用方传入。
    */
-  static async downloadSubtitleText(url: string, cacheDir: string = ''): Promise<string> {
+  static async downloadSubtitleText(url: string, cacheDir: string = '', preferred: string = ''): Promise<string> {
+    const path = (url || '').toLowerCase().split('?')[0];
+    if (path.endsWith('.rar')) {
+      throw new Error('RAR 压缩包暂不支持，请换一条结果');
+    }
+    if (path.endsWith('.zip')) {
+      hilog.info(0x0001, 'PrismSub', 'download zip %{public}s cache=%{public}s', path, cacheDir ? 'yes' : 'no');
+      const bin = await SubtitleService.fetchBinary(url);
+      return SubtitleService.extractSubtitleFromZip(bin, cacheDir, preferred);
+    }
     if (url.startsWith('osdl://')) {
       const fileId = url.substring('osdl://download?file_id='.length);
-      return SubtitleService.downloadOpenSubtitles(fileId, cacheDir);
+      return SubtitleService.downloadOpenSubtitles(fileId, cacheDir, preferred);
     }
     if (url.includes('/detail/')) {
-      return SubtitleService.downloadZimukuSubtitle(url, cacheDir);
+      return SubtitleService.downloadZimukuSubtitle(url, cacheDir, preferred);
     }
     const req = new rcp.Request(url, 'GET', {
       'User-Agent': 'PrismPlayer/1.0'
@@ -347,9 +472,10 @@ export class SubtitleService {
   }
 
   private static async fetchBinary(url: string): Promise<ArrayBuffer> {
+    const referer = url.indexOf('assrt.net') >= 0 ? 'https://assrt.net/' : 'https://zimuku.org/';
     const req = new rcp.Request(url, 'GET', {
       'User-Agent': 'Mozilla/5.0 (Linux; Android 12; HarmonyOS NEXT) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36',
-      'Referer': 'https://zimuku.org/',
+      'Referer': referer,
       'Accept': '*/*'
     });
     req.configuration = {
@@ -367,7 +493,7 @@ export class SubtitleService {
     return body;
   }
 
-  private static async downloadOpenSubtitles(fileId: string, cacheDir: string): Promise<string> {
+  private static async downloadOpenSubtitles(fileId: string, cacheDir: string, preferred: string = ''): Promise<string> {
     const req = new rcp.Request(`https://api.opensubtitles.com/api/v1/download?file_id=${encodeURIComponent(fileId)}`, 'GET', {
       'Api-Key': AppConstants.OPENSUBTITLES_API_KEY,
       'Authorization': `Bearer ${AppConstants.OPENSUBTITLES_USER_TOKEN}`,
@@ -389,12 +515,12 @@ export class SubtitleService {
     const bin = await SubtitleService.fetchBinary(parsed.link);
     const bytes = new Uint8Array(bin);
     if (bytes.length > 2 && bytes[0] === 0x50 && bytes[1] === 0x4B) {
-      return SubtitleService.extractSubtitleFromZip(bin, cacheDir);
+      return SubtitleService.extractSubtitleFromZip(bin, cacheDir, preferred);
     }
-    return SubtitleService.binToText(bin);
+    return SubtitleService.decodeSubtitleBytes(bin, preferred);
   }
 
-  private static async downloadZimukuSubtitle(detailUrl: string, cacheDir: string): Promise<string> {
+  private static async downloadZimukuSubtitle(detailUrl: string, cacheDir: string, preferred: string = ''): Promise<string> {
     const pageReq = new rcp.Request(detailUrl, 'GET', {
       'User-Agent': 'Mozilla/5.0 (Linux; Android 12; HarmonyOS NEXT) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36',
       'Referer': 'https://zimuku.org/',
@@ -433,7 +559,7 @@ export class SubtitleService {
 
     if (lower.endsWith('.srt') || lower.endsWith('.ass') || lower.endsWith('.ssa')) {
       const bin = await SubtitleService.fetchBinary(direct);
-      return SubtitleService.binToText(bin);
+      return SubtitleService.decodeSubtitleBytes(bin, preferred);
     }
 
     // ZIP 压缩包：落盘 → 解压 → 取第一条字幕文件
@@ -441,11 +567,11 @@ export class SubtitleService {
       throw new Error('内部缓存目录不可用，无法解压字幕压缩包');
     }
     const bin = await SubtitleService.fetchBinary(direct);
-    return SubtitleService.extractSubtitleFromZip(bin, cacheDir);
+    return SubtitleService.extractSubtitleFromZip(bin, cacheDir, preferred);
   }
 
   /** ZIP 压缩包落盘解压，取第一条字幕文件文本（优先 ASS 特效字幕）。 */
-  private static async extractSubtitleFromZip(bin: ArrayBuffer, cacheDir: string): Promise<string> {
+  private static async extractSubtitleFromZip(bin: ArrayBuffer, cacheDir: string, preferred: string = ''): Promise<string> {
     if (!cacheDir) {
       throw new Error('内部缓存目录不可用，无法解压字幕压缩包');
     }
@@ -456,8 +582,16 @@ export class SubtitleService {
     fs.writeSync(zipFile.fd, bin);
     fs.closeSync(zipFile.fd);
     try {
-      await zlib.decompressFile(zipPath, destDir);
-      const names = await fs.listFile(destDir);
+      // zlib.decompressFile requires the destination directory to already exist.
+      fs.mkdirSync(destDir, true);
+      try {
+        await zlib.decompressFile(zipPath, destDir);
+      } catch (e) {
+        hilog.error(0x0001, 'PrismSub', 'unzip failed: %{public}s', e instanceof Error ? e.message : String(e));
+        throw new Error('字幕压缩包解压失败，请换一条结果');
+      }
+      const names = await fs.listFile(destDir, { recursion: true, listNum: 200 });
+      hilog.info(0x0001, 'PrismSub', 'unzip entries=%{public}d', names.length);
       let picked = '';
       for (let i = 0; i < names.length; i++) {
         const n = names[i].toLowerCase();
@@ -469,35 +603,105 @@ export class SubtitleService {
       if (!picked) {
         throw new Error('压缩包内没有可用的字幕文件');
       }
-      const subFile = fs.openSync(`${destDir}/${picked}`, fs.OpenMode.READ_ONLY);
+      const subPath = picked.startsWith('/') ? picked.substring(1) : picked;
+      const subFile = fs.openSync(`${destDir}/${subPath}`, fs.OpenMode.READ_ONLY);
       const stat = fs.statSync(subFile.fd);
       const buf = new ArrayBuffer(Math.min(stat.size, 8 * 1024 * 1024));
       fs.readSync(subFile.fd, buf);
       fs.closeSync(subFile.fd);
-      return SubtitleService.binToText(buf);
+      return SubtitleService.decodeSubtitleBytes(buf, preferred);
     } finally {
       try { fs.unlinkSync(zipPath); } catch (_e) { /* best effort cleanup */ }
       try { fs.rmdirSync(destDir); } catch (_e) { /* best effort cleanup */ }
     }
   }
 
-  /** 压缩包内常见 GBK/BOM 处理：优先 UTF-8 解码，失败回退尝试 UTF-16LE，仍失败返回替换字符版本。 */
-  private static binToText(bin: ArrayBuffer): string {
+  /** Decodes subtitle bytes with BOM/UTF-8/GBK/Windows-1252 detection. */
+  static decodeSubtitleBytes(bin: ArrayBuffer, preferred: string = ''): string {
     const bytes = new Uint8Array(bin);
     if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) {
       return util.TextDecoder.create('utf-16le').decodeToString(bytes.subarray(2));
     }
-    try {
-      return util.TextDecoder.create('utf-8').decodeToString(bytes);
-    } catch (_e) {
-      return util.TextDecoder.create('gb18030').decodeToString(bytes);
+    if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) {
+      return util.TextDecoder.create('utf-16be').decodeToString(bytes.subarray(2));
     }
+
+    const utf8 = SubtitleService.tryDecode(bytes, 'utf-8', true);
+    if (utf8 !== null && utf8.indexOf('\uFFFD') < 0) {
+      return utf8.replace(/^\uFEFF/, '');
+    }
+
+    const pref = (preferred || '').toLowerCase();
+    if (pref === 'windows-1252' || pref === 'iso-8859-1') {
+      const win = SubtitleService.decodeWindows1252(bytes);
+      if (win) return win;
+    }
+    if (pref === 'gb18030' || pref === 'gbk') {
+      const gb = SubtitleService.tryDecode(bytes, 'gb18030', true);
+      if (gb !== null && SubtitleService.countCjk(gb) > 0) return gb;
+    }
+
+    const gb = SubtitleService.tryDecode(bytes, 'gb18030', true);
+    const win = SubtitleService.decodeWindows1252(bytes);
+    if (gb !== null) {
+      const cjk = SubtitleService.countCjk(gb);
+      const latinWords = SubtitleService.countLatinWords(gb);
+      // Chinese subtitles are CJK-dominant; a Spanish file misread as GBK keeps many Latin words.
+      if (cjk >= 20 && cjk > latinWords * 2) return gb;
+    }
+    if (win) return win;
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) {
+      out += String.fromCharCode(bytes[i]);
+    }
+    return out;
+  }
+
+  private static tryDecode(bytes: Uint8Array, encoding: string, fatal: boolean): string | null {
+    try {
+      return util.TextDecoder.create(encoding, { fatal: fatal }).decodeToString(bytes);
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  private static decodeWindows1252(bytes: Uint8Array): string {
+    const decoded = SubtitleService.tryDecode(bytes, 'windows-1252', false);
+    if (decoded !== null) return decoded;
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) {
+      out += String.fromCharCode(bytes[i]);
+    }
+    return out;
+  }
+
+  private static countCjk(text: string): number {
+    const matches = text.match(/[\u4e00-\u9fff\u3400-\u4dbf]/g);
+    return matches ? matches.length : 0;
+  }
+
+  private static countLatinWords(text: string): number {
+    const matches = text.match(/[A-Za-z\u00C0-\u024F]{2,}/g);
+    return matches ? matches.length : 0;
   }
 
   /**
    * Translates a foreign subtitle cue to Simplified Chinese with in-memory caching.
    * Skips text that already contains Chinese characters.
    */
+  static requestTranslation(text: string): void {
+    const clean = (text || '').trim();
+    if (!clean || SubtitleService.translationCache.has(clean) || SubtitleService.translationPending.has(clean) || SubtitleService.translationFailed.has(clean)) return;
+    SubtitleService.translationPending.add(clean);
+    SubtitleService.translateToChinese(clean)
+      .then((out: string) => {
+        if (out === clean && !/[\u4e00-\u9fff]/.test(clean)) {
+          SubtitleService.translationFailed.add(clean);
+        }
+      })
+      .finally(() => { SubtitleService.translationPending.delete(clean); });
+  }
+
   static async translateToChinese(text: string): Promise<string> {
     const clean = (text || '').trim();
     if (!clean) return '';
@@ -536,9 +740,11 @@ export class SubtitleService {
             return out;
           }
         }
+      } else {
+        hilog.warn(0x0001, 'PrismSub', 'translate http %{public}d', resp.statusCode);
       }
-    } catch (_e) {
-      // Fallback gracefully to original text
+    } catch (e) {
+      hilog.warn(0x0001, 'PrismSub', 'translate failed: %{public}s', e instanceof Error ? e.message : String(e));
     }
     return clean;
   }
@@ -556,13 +762,23 @@ export class SubtitleService {
     try {
       if (!SubtitleService.ttsEngine && !SubtitleService.ttsCreating) {
         SubtitleService.ttsCreating = true;
-        const initParams: textToSpeech.CreateEngineParams = {
+        const offlineParams: textToSpeech.CreateEngineParams = {
           language: 'zh-CN',
           person: 0,
-          online: 1,
+          online: 0,
           extraParams: { 'style': 'interaction-broadcast', 'locate': 'CN', 'name': 'PrismTTS' }
         };
-        SubtitleService.ttsEngine = await textToSpeech.createEngine(initParams);
+        try {
+          SubtitleService.ttsEngine = await textToSpeech.createEngine(offlineParams);
+        } catch (_offlineError) {
+          const onlineParams: textToSpeech.CreateEngineParams = {
+            language: 'zh-CN',
+            person: 0,
+            online: 1,
+            extraParams: { 'style': 'interaction-broadcast', 'locate': 'CN', 'name': 'PrismTTS' }
+          };
+          SubtitleService.ttsEngine = await textToSpeech.createEngine(onlineParams);
+        }
         SubtitleService.ttsCreating = false;
       }
       if (SubtitleService.ttsEngine) {
@@ -578,8 +794,9 @@ export class SubtitleService {
         };
         SubtitleService.ttsEngine.speak(clean, speakParams);
       }
-    } catch (_e) {
+    } catch (e) {
       SubtitleService.ttsCreating = false;
+      hilog.warn(0x0001, 'PrismSub', 'tts failed: %{public}s', e instanceof Error ? e.message : String(e));
     }
   }
 

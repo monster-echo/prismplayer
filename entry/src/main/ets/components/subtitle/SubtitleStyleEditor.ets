@@ -100,7 +100,7 @@ export struct SubtitleStyleEditor {
           .backgroundColor(this.bubbleBgColor())
           .margin({ left: 16, right: 16, bottom: this.previewBottomPad() })
         } else {
-          Text('当前过滤条件下没有可显示的字幕行')
+          Text('当前过滤条件下没有字幕行')
             .fontSize(11)
             .fontColor('#94A3B8')
             .margin({ bottom: 18 })
@@ -126,7 +126,7 @@ export struct SubtitleStyleEditor {
 
         if (this.showLanguageFilter) {
           Divider().color('#1FFFFFFF')
-          SubtitleSectionHeader({ title: '双语字幕行过滤', note: '按语言筛选双语字幕行；这里的选择会保存为默认' })
+          SubtitleSectionHeader({ title: '双语字幕行过滤', note: '按语言过滤双语行' })
           Row({ space: 8 }) {
             ForEach(['all', 'zh', 'en'] as SubtitleLanguageMode[], (m: SubtitleLanguageMode) => {
               SubtitleChip({
@@ -142,7 +142,7 @@ export struct SubtitleStyleEditor {
         Divider().color('#1FFFFFFF')
         SubtitleToggleRow({
           title: '半透明底框',
-          desc: '在字幕文字后垫一层黑色底，提升亮场景可读性',
+          desc: '提升亮场景可读性',
           value: this.bgEnabled,
           onChange: (v: boolean) => this.onBgToggle(v)
         })
@@ -171,7 +171,7 @@ export struct SubtitleStyleEditor {
               this.onOffsetCommit();
             }
           })
-        Text('数值越大，字幕整体越靠上；默认 0 为画面底部安全区。')
+        Text('越大越靠上；0 为底部安全区')
           .fontSize(10)
           .lineHeight(15)
           .fontColor('#6B7280')

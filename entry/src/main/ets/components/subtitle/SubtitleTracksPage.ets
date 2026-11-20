@@ -1,8 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
-import { util } from '@kit.ArkTS';
 import { ExternalSubtitleTrack, PlayerTrackItem } from '../../common/Types';
 import { SubtitleEngine } from '../../services/SubtitleEngine';
+import { SubtitleService } from '../../services/SubtitleService';
 import { SubtitleSession } from '../../services/SubtitleSession';
 import {
   SubtitleChip,
@@ -62,10 +62,10 @@ export struct SubtitleTracksPage {
           fs.readSync(file.fd, buf);
           fs.closeSync(file.fd);
 
-          const text = util.TextDecoder.create('utf-8').decodeToString(new Uint8Array(buf));
+          const text = SubtitleService.decodeSubtitleBytes(buf);
           const decoded = decodeURIComponent(uris[i]);
           const name = decoded.substring(decoded.lastIndexOf('/') + 1);
-          this.session.addExternalTrack(SubtitleEngine.parse(text, name, uris[i]));
+          this.session.addExternalTrack(SubtitleEngine.parse(text, name, uris[i]), loaded === 0);
           lastName = name;
           loaded++;
         } catch (_e) {
@@ -165,7 +165,7 @@ export struct SubtitleTracksPage {
     Column() {
       SubtitlePageHeader({
         title: '字幕轨道',
-        caption: '内嵌轨与外挂轨都只影响当前视频',
+        caption: '只影响当前视频',
         onBack: () => this.onBack(),
         onClose: () => this.onClose()
       })
@@ -175,7 +175,7 @@ export struct SubtitleTracksPage {
           Column({ space: 10 }) {
             SubtitleToggleRow({
               title: '显示字幕',
-              desc: '关闭后外挂字幕与内嵌字幕都不会绘制',
+              desc: '同时关闭内嵌与外挂',
               value: this.session.enabled,
               onChange: (v: boolean) => this.session.setEnabled(v)
             })
@@ -190,7 +190,7 @@ export struct SubtitleTracksPage {
             this.sectionCardTitle(
               `内嵌字幕轨（${this.session.embeddedTracks.length}）`,
               this.session.embeddedSupported
-                ? '来自视频容器内部的字幕流；与外挂字幕可同时显示'
+                ? '容器内字幕流，可与外挂同时显示'
                 : '当前为 FFmpeg 软解内核，内嵌字幕轨只能在硬解内核下选择'
             )
             if (this.session.embeddedSupported) {
@@ -221,7 +221,7 @@ export struct SubtitleTracksPage {
           Column({ space: 10 }) {
             this.sectionCardTitle(
               `外挂字幕轨（${this.session.externalTracks.length}）`,
-              '可同时启用多条外挂字幕，用于双语对照或特效字幕叠加'
+              '可多选，用于双语或特效叠加'
             )
             if (this.session.externalTracks.length === 0) {
               Text('尚未挂载外挂字幕').fontSize(12).fontColor('#6B7280')
@@ -236,7 +236,7 @@ export struct SubtitleTracksPage {
                 .fontColor(this.session.enabledTrackIds.length > 0 ? '#10B981' : '#6B7280')
             }
 
-            Button('导入本地 .ass / .srt / .vtt 字幕（可多选）')
+            Button('导入本地字幕')
               .width('100%')
               .height(40)
               .fontSize(13)
@@ -252,7 +252,7 @@ export struct SubtitleTracksPage {
           .border({ width: 0.7, color: '#1FFFFFFF' })
           .alignItems(HorizontalAlign.Start)
 
-          Text('内嵌字幕与外挂字幕可同时显示；若文字重叠，请关闭其中一条。')
+          Text('内嵌与外挂可同时显示；重叠时关掉一条。')
             .fontSize(10)
             .lineHeight(16)
             .fontColor('#6B7280')

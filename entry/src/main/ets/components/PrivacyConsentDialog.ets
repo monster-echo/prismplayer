@@ -10,7 +10,8 @@ export struct PrivacyConsentDialog {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor($r('app.color.bg_elevated'))
+        .backgroundColor($r('app.color.scrim_backdrop'))
+        .backdropBlur(10)
 
       Column({ space: 16 }) {
         Row({ space: 10 }) {

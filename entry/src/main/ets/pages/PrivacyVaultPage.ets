@@ -1,17 +1,22 @@
 import { VaultEntry } from '../common/Types';
+import { PageShell } from '../components/PageShell';
 import { NavHeaderBar } from '../components/NavHeaderBar';
+import { PatternPad } from '../components/PatternPad';
 import { AppStore } from '../services/AppStore';
+
+type ChangeStage = 'old' | 'new' | 'confirm';
 
 @Entry
 @ComponentV2
 struct PrivacyVaultPage {
   @Local store: AppStore = AppStore.getInstance();
-  @Local pinInput: string = '';
-  @Local confirmPinInput: string = '';
-  @Local oldPinInput: string = '';
-  @Local showChangePin: boolean = false;
+  @Local firstPattern: string = '';
   @Local statusText: string = '';
   @Local isError: boolean = false;
+  @Local showChangePattern: boolean = false;
+  @Local changeStage: ChangeStage = 'old';
+  @Local newPattern: string = '';
+  @Local busy: boolean = false;
 
   onBackPress(): boolean {
     this.getUIContext().getRouter().back();
@@ -23,315 +28,275 @@ struct PrivacyVaultPage {
     return src ? src.name : sourceId;
   }
 
-  private async handleSetupOrUnlock(): Promise<void> {
-    if (!this.store.hasVaultPin()) {
-      const p1 = this.pinInput.trim();
-      const p2 = this.confirmPinInput.trim();
-      if (p1.length < 4) {
-        this.isError = true;
-        this.statusText = '请设置至少 4 位数字密码';
-        return;
-      }
-      if (p1 !== p2) {
-        this.isError = true;
-        this.statusText = '两次输入的密码不一致';
-        return;
-      }
-      await this.store.setVaultPin(p1);
-      await this.store.unlockVault(p1);
-      this.pinInput = '';
-      this.confirmPinInput = '';
-      this.isError = false;
-      this.statusText = '保险箱密码已设定并已解锁，可在片源目录或详情页把内容隐藏到保险库';
-      return;
-    }
-
-    const ok = await this.store.unlockVault(this.pinInput);
-    if (ok) {
-      this.pinInput = '';
-      this.isError = false;
-      this.statusText = '已解锁隐藏内容，切换至后台将自动重新上锁';
-    } else {
-      this.isError = true;
-      this.statusText = '保险箱密码错误，请重试';
-    }
+  private setupPrompt(): string {
+    if (this.firstPattern) return '再次绘制确认';
+    return '绘制解锁图案';
   }
 
-  private async handleUpdatePin(): Promise<void> {
-    const valid = await this.store.verifyVaultPin(this.oldPinInput);
-    if (!valid) {
-      this.isError = true;
-      this.statusText = '原密码验证失败';
+  private changePrompt(): string {
+    if (this.changeStage === 'old') return '绘制当前图案';
+    if (this.changeStage === 'new') return '绘制新图案';
+    return '再次绘制新图案';
+  }
+
+  private showStatus(message: string, error: boolean): void {
+    this.statusText = message;
+    this.isError = error;
+  }
+
+  private async onPattern(pattern: string): Promise<void> {
+    if (this.busy) return;
+
+    if (!this.store.hasVaultPattern()) {
+      if (!this.firstPattern) {
+        this.firstPattern = pattern;
+        this.statusText = '';
+        return;
+      }
+      if (pattern !== this.firstPattern) {
+        this.firstPattern = '';
+        this.showStatus('两次图案不一致，请重画', true);
+        return;
+      }
+      this.busy = true;
+      await this.store.setVaultPattern(pattern);
+      await this.store.unlockVault(pattern);
+      this.busy = false;
+      this.firstPattern = '';
+      this.statusText = '';
       return;
     }
-    const next = this.pinInput.trim();
-    if (next.length < 4) {
-      this.isError = true;
-      this.statusText = '新密码至少 4 位';
+
+    if (!this.store.vaultUnlocked) {
+      this.busy = true;
+      const ok = await this.store.unlockVault(pattern);
+      this.busy = false;
+      if (!ok) this.showStatus('图案错误', true);
       return;
     }
-    await this.store.setVaultPin(next);
-    this.oldPinInput = '';
-    this.pinInput = '';
-    this.showChangePin = false;
+
+    if (!this.showChangePattern) return;
+
+    if (this.changeStage === 'old') {
+      this.busy = true;
+      const ok = await this.store.verifyVaultPattern(pattern);
+      this.busy = false;
+      if (!ok) {
+        this.showStatus('当前图案错误', true);
+        return;
+      }
+      this.changeStage = 'new';
+      this.statusText = '';
+      return;
+    }
+
+    if (this.changeStage === 'new') {
+      this.newPattern = pattern;
+      this.changeStage = 'confirm';
+      this.statusText = '';
+      return;
+    }
+
+    if (pattern !== this.newPattern) {
+      this.changeStage = 'new';
+      this.newPattern = '';
+      this.showStatus('两次图案不一致，请重画', true);
+      return;
+    }
+
+    this.busy = true;
+    await this.store.setVaultPattern(pattern);
+    this.busy = false;
+    this.showChangePattern = false;
+    this.changeStage = 'old';
+    this.newPattern = '';
+    this.statusText = '';
+  }
+
+  private toggleChangePattern(): void {
+    this.showChangePattern = !this.showChangePattern;
+    this.changeStage = 'old';
+    this.newPattern = '';
+    this.statusText = '';
     this.isError = false;
-    this.statusText = '私密保险箱密码已更新';
+  }
+
+  @Builder
+  patternCard(prompt: string) {
+    Column({ space: 10 }) {
+      Text(prompt)
+        .fontSize(13)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_secondary'))
+      PatternPad({
+        padSize: 250,
+        onComplete: (pattern: string) => { this.onPattern(pattern); },
+        onInvalid: (message: string) => { this.showStatus(message, true); }
+      })
+      if (this.statusText) {
+        Text(this.statusText)
+          .fontSize(12)
+          .fontColor(this.isError ? $r('app.color.danger') : $r('app.color.success'))
+      }
+    }
+    .width('100%')
+    .padding({ top: 14, bottom: 14 })
+    .borderRadius(14)
+    .backgroundColor($r('app.color.bg_elevated'))
+    .border({ width: 0.8, color: $r('app.color.border_subtle') })
+  }
+
+  @Builder
+  vaultEntryRow(entry: VaultEntry) {
+    Row({ space: 12 }) {
+      if (entry.kind === 'folder') {
+        Column() {
+          Image($r('app.media.ic_file_folder')).width(24).height(24)
+        }
+        .width(44)
+        .height(62)
+        .borderRadius(6)
+        .backgroundColor($r('app.color.fill_subtle'))
+        .justifyContent(FlexAlign.Center)
+      } else if (entry.posterUrl) {
+        Image(entry.posterUrl)
+          .width(44)
+          .height(62)
+          .borderRadius(6)
+          .objectFit(ImageFit.Cover)
+          .backgroundColor($r('app.color.fill_subtle'))
+      } else {
+        Column() {
+          Image($r('app.media.ic_file_video')).width(22).height(22)
+        }
+        .width(44)
+        .height(62)
+        .borderRadius(6)
+        .backgroundColor($r('app.color.fill_subtle'))
+        .justifyContent(FlexAlign.Center)
+      }
+
+      Column({ space: 2 }) {
+        Text(entry.title)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(`${entry.kind === 'series' ? '剧集' : entry.kind === 'movie' ? '电影' : '目录'} · ${this.getSourceName(entry.sourceId)}`)
+          .fontSize(11)
+          .fontColor($r('app.color.text_muted'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+      Button('取消隐藏')
+        .height(30)
+        .padding({ left: 10, right: 10 })
+        .fontSize(11)
+        .fontColor($r('app.color.danger'))
+        .backgroundColor('#1AF87171')
+        .borderRadius(8)
+        .onClick(() => { this.store.unhideVaultEntry(entry); })
+    }
+    .width('100%')
+    .padding(12)
+    .borderRadius(12)
+    .backgroundColor($r('app.color.bg_elevated'))
+    .border({ width: 0.7, color: '#22FFFFFF' })
   }
 
   build() {
     Column() {
       NavHeaderBar({
         title: '隐私保险库',
-        subtitle: this.store.vaultUnlocked
-          ? '当前状态：已解锁（退回后台自动上锁）'
-          : (this.store.hasVaultPin() ? '当前状态：已加锁保护中' : '首次使用请设置 4 位以上安全密码'),
+        subtitle: `已隐藏 ${this.store.vaultEntries.length} 项`,
+        statusLabel: this.store.vaultUnlocked ? '已解锁' : (this.store.hasVaultPattern() ? '已锁定' : '未设置'),
+        statusIcon: this.store.vaultUnlocked ? $r('sys.symbol.lock_open_fill') : $r('sys.symbol.lock_fill'),
+        statusAccent: this.store.vaultUnlocked,
         onBack: () => this.getUIContext().getRouter().back()
       })
 
-      Scroll() {
-        Column({ space: 18 }) {
-          // Status Hero Card
-          Row({ space: 14 }) {
-            Column() {
-              Image($r('app.media.ic_lock_vault')).width(30).height(30)
-            }
-            .width(50)
-            .height(50)
-            .borderRadius(13)
-            .backgroundColor(this.store.vaultUnlocked ? '#2234D399' : '#24F5B841')
-            .justifyContent(FlexAlign.Center)
+      Stack() {
+        PageShell({ maxWidth: 760 }) {
+          Column() {
 
-            Column({ space: 4 }) {
-              Text(this.store.vaultUnlocked ? '私密空间已解锁' : '保险库保护中')
-                .fontSize(16)
-                .fontWeight(FontWeight.Bold)
-                .fontColor($r('app.color.text_primary'))
-              Text(
-                this.store.vaultUnlocked
-                  ? `已隐藏 ${this.store.vaultEntries.length} 项内容 · 现在可在影库中查看`
-                  : `已隐藏 ${this.store.vaultEntries.length} 项剧集 / 电影 / 目录及其观看记录`
-              )
-                .fontSize(12)
-                .lineHeight(18)
-                .fontColor($r('app.color.text_secondary'))
-            }
-            .layoutWeight(1)
-            .alignItems(HorizontalAlign.Start)
-          }
-          .width('100%')
-          .padding(16)
-          .borderRadius(14)
-          .backgroundColor($r('app.color.bg_elevated'))
-          .border({ width: 0.8, color: this.store.vaultUnlocked ? '#4434D399' : '#44F5B841' })
+            Scroll() {
+              Column({ space: 16 }) {
+                if (!this.store.hasVaultPattern() || !this.store.vaultUnlocked) {
+                  this.patternCard(this.store.hasVaultPattern() ? '绘制图案解锁' : this.setupPrompt())
+                } else {
+                  Row({ space: 10 }) {
+                    Button('立即上锁')
+                    .layoutWeight(1)
+                    .height(42)
+                    .fontSize(13)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor(Color.Black)
+                    .backgroundColor($r('app.color.accent_gold'))
+                    .borderRadius(10)
+                    .onClick(() => {
+                      this.store.lockVault();
+                      this.showChangePattern = false;
+                      this.statusText = '';
+                    })
 
-          if (!this.store.hasVaultPin() || !this.store.vaultUnlocked) {
-            Column({ space: 12 }) {
-              Text(this.store.hasVaultPin() ? '输入保险箱密码解锁隐藏内容' : '设置保险箱访问密码（HUKS 加密存储）')
-                .fontSize(13)
-                .fontWeight(FontWeight.Bold)
-                .fontColor($r('app.color.text_secondary'))
-
-              TextInput({ text: this.pinInput, placeholder: '输入 4-8 位数字密码' })
-                .type(InputType.Password)
-                .height(44)
-                .fontSize(15)
-                .fontColor($r('app.color.text_primary'))
-                .backgroundColor($r('app.color.bg_secondary'))
-                .borderRadius(10)
-                .onChange((v: string) => { this.pinInput = v; })
-
-              if (!this.store.hasVaultPin()) {
-                TextInput({ text: this.confirmPinInput, placeholder: '再次确认密码' })
-                  .type(InputType.Password)
-                  .height(44)
-                  .fontSize(15)
-                  .fontColor($r('app.color.text_primary'))
-                  .backgroundColor($r('app.color.bg_secondary'))
-                  .borderRadius(10)
-                  .onChange((v: string) => { this.confirmPinInput = v; })
-              }
-
-              Button(this.store.hasVaultPin() ? '验证并解锁' : '保存密码并开启保险库')
-                .width('100%')
-                .height(44)
-                .fontSize(14)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(Color.White)
-                .backgroundColor($r('app.color.accent_blue'))
-                .borderRadius(10)
-                .onClick(() => { this.handleSetupOrUnlock(); })
-            }
-            .width('100%')
-            .padding(16)
-            .borderRadius(14)
-            .backgroundColor($r('app.color.bg_elevated'))
-            .border({ width: 0.8, color: $r('app.color.border_subtle') })
-            .alignItems(HorizontalAlign.Start)
-          } else {
-            // Unlocked Vault Controls + Hidden Folder List
-            Row({ space: 10 }) {
-              Button('立即上锁并隐藏')
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(13)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(Color.Black)
-                .backgroundColor($r('app.color.accent_gold'))
-                .borderRadius(10)
-                .onClick(() => {
-                  this.store.lockVault();
-                  this.isError = false;
-                  this.statusText = '已立即上锁，全部隐藏内容已重新保护';
-                })
-
-              Button(this.showChangePin ? '收起改密' : '修改密码')
-                .height(42)
-                .padding({ left: 16, right: 16 })
-                .fontSize(13)
-                .fontColor($r('app.color.text_primary'))
-                .backgroundColor($r('app.color.bg_elevated'))
-                .borderRadius(10)
-                .border({ width: 0.7, color: $r('app.color.fill_strong') })
-                .onClick(() => { this.showChangePin = !this.showChangePin; })
-            }
-            .width('100%')
-
-            if (this.showChangePin) {
-              Column({ space: 10 }) {
-                TextInput({ text: this.oldPinInput, placeholder: '输入当前密码' })
-                  .type(InputType.Password)
-                  .height(42)
-                  .fontSize(14)
-                  .fontColor($r('app.color.text_primary'))
-                  .backgroundColor($r('app.color.bg_secondary'))
-                  .borderRadius(10)
-                  .onChange((v: string) => { this.oldPinInput = v; })
-
-                TextInput({ text: this.pinInput, placeholder: '输入新密码（至少 4 位）' })
-                  .type(InputType.Password)
-                  .height(42)
-                  .fontSize(14)
-                  .fontColor($r('app.color.text_primary'))
-                  .backgroundColor($r('app.color.bg_secondary'))
-                  .borderRadius(10)
-                  .onChange((v: string) => { this.pinInput = v; })
-
-                Button('确认修改密码')
-                  .width('100%')
-                  .height(40)
-                  .fontSize(13)
-                  .fontWeight(FontWeight.Bold)
-                  .fontColor(Color.White)
-                  .backgroundColor($r('app.color.accent_blue'))
-                  .borderRadius(10)
-                  .onClick(() => { this.handleUpdatePin(); })
-              }
-              .width('100%')
-              .padding(14)
-              .borderRadius(14)
-              .backgroundColor($r('app.color.bg_elevated'))
-              .border({ width: 0.8, color: $r('app.color.border_subtle') })
-            }
-
-            Column({ space: 10 }) {
-              Text(`已隐藏内容 (${this.store.vaultEntries.length})`)
-                .fontSize(13)
-                .fontWeight(FontWeight.Bold)
-                .fontColor($r('app.color.text_secondary'))
-
-              if (this.store.vaultEntries.length === 0) {
-                Text('暂未隐藏任何内容。可在剧集 / 电影详情页点「隐藏到保险库」，或在「片源 → 浏览目录」隐藏整个目录。')
-                  .fontSize(12)
-                  .lineHeight(18)
-                  .fontColor($r('app.color.text_muted'))
-              } else {
-                ForEach(this.store.vaultEntries, (entry: VaultEntry) => {
-                  Row({ space: 12 }) {
-                    if (entry.kind === 'folder') {
-                      Column() {
-                        Image($r('app.media.ic_file_folder')).width(24).height(24)
-                      }
-                      .width(44)
-                      .height(62)
-                      .borderRadius(6)
-                      .backgroundColor($r('app.color.fill_subtle'))
-                      .justifyContent(FlexAlign.Center)
-                    } else if (entry.posterUrl) {
-                      Image(entry.posterUrl)
-                        .width(44)
-                        .height(62)
-                        .borderRadius(6)
-                        .objectFit(ImageFit.Cover)
-                        .backgroundColor($r('app.color.fill_subtle'))
-                    } else {
-                      Column() {
-                        Image($r('app.media.ic_file_video')).width(22).height(22)
-                      }
-                      .width(44)
-                      .height(62)
-                      .borderRadius(6)
-                      .backgroundColor($r('app.color.fill_subtle'))
-                      .justifyContent(FlexAlign.Center)
-                    }
-
-                    Column({ space: 2 }) {
-                      Text(entry.title)
-                        .fontSize(14)
-                        .fontWeight(FontWeight.Medium)
-                        .fontColor($r('app.color.text_primary'))
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      Text(`${entry.kind === 'series' ? '剧集' : entry.kind === 'movie' ? '电影' : '目录'} · ${this.getSourceName(entry.sourceId)}`)
-                        .fontSize(11)
-                        .fontColor($r('app.color.text_muted'))
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-
-                    Button('取消隐藏')
-                      .height(30)
-                      .padding({ left: 10, right: 10 })
-                      .fontSize(11)
-                      .fontColor($r('app.color.danger'))
-                      .backgroundColor('#1AF87171')
-                      .borderRadius(8)
-                      .onClick(() => { this.store.unhideVaultEntry(entry); })
+                    Button(this.showChangePattern ? '收起' : '修改图案')
+                    .height(42)
+                    .padding({ left: 16, right: 16 })
+                    .fontSize(13)
+                    .fontColor($r('app.color.text_primary'))
+                    .backgroundColor($r('app.color.bg_elevated'))
+                    .borderRadius(10)
+                    .border({ width: 0.7, color: $r('app.color.fill_strong') })
+                    .onClick(() => this.toggleChangePattern())
                   }
                   .width('100%')
-                  .padding(12)
-                  .borderRadius(12)
-                  .backgroundColor($r('app.color.bg_elevated'))
-                  .border({ width: 0.7, color: '#22FFFFFF' })
-                }, (e: VaultEntry) => e.id)
+
+                  if (this.showChangePattern) {
+                    this.patternCard(this.changePrompt())
+                  }
+
+                  Column({ space: 10 }) {
+                    Text(`已隐藏内容 (${this.store.vaultEntries.length})`)
+                    .fontSize(13)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor($r('app.color.text_secondary'))
+
+                    if (this.store.vaultEntries.length === 0) {
+                      Text('暂无隐藏内容')
+                      .fontSize(12)
+                      .fontColor($r('app.color.text_muted'))
+                    } else {
+                      ForEach(this.store.vaultEntries, (entry: VaultEntry) => {
+                        this.vaultEntryRow(entry)
+                      }, (e: VaultEntry) => e.id)
+                    }
+
+                    Text('隐藏不会修改原文件。')
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_muted'))
+                  }
+                  .width('100%')
+                  .alignItems(HorizontalAlign.Start)
+                }
+
               }
-
-              Text('说明：隐藏只是把内容从影库与搜索中移出并由保险箱密码保护，服务器上的原始文件不会被加密或修改。')
-                .fontSize(10)
-                .lineHeight(16)
-                .fontColor($r('app.color.text_muted'))
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-          }
-
-          if (this.statusText) {
-            Text(this.statusText)
-              .fontSize(12)
-              .lineHeight(18)
-              .fontColor(this.isError ? $r('app.color.danger') : $r('app.color.success'))
-              .padding(12)
+              .padding({ left: 18, right: 18, top: 14, bottom: 32 })
               .width('100%')
-              .borderRadius(10)
-              .backgroundColor($r('app.color.bg_elevated'))
+            }
+            .layoutWeight(1)
+            .width('100%')
+            .align(Alignment.TopStart)
+            .scrollBar(BarState.Off)
           }
+          .width('100%')
+          .height('100%')
+          .backgroundColor($r('app.color.bg_primary'))
         }
-        .padding({ left: 18, right: 18, top: 14, bottom: 32 })
-        .width('100%')
       }
-      .layoutWeight(1)
       .width('100%')
-      .align(Alignment.TopStart)
-      .scrollBar(BarState.Off)
+      .layoutWeight(1)
     }
     .width('100%')
     .height('100%')
