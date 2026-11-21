@@ -1,4 +1,8 @@
-Version 1.0.3
-- Pull-to-refresh across Library, Sources, History, Movie details and Source browser
-- PrismPlayer Pro lifetime unlock is now live: unlimited sources, 4K HDR and ASS subtitle styling
-- More stable Pro purchase and restore flow
+Version 1.0.4
+- Share a link from any app and PrismPlayer opens it directly
+- Import local videos by folder, with auto artwork and access that survives restarts
+- Continue Watching widget now shows posters and refreshes as soon as an episode ends
+- Decoder choice follows your device's hardware codecs, so MKV can stay hardware-decoded
+- Live bandwidth check warns before playback stalls
+- Fixes: saved videos failing to open, share sheet not appearing
+- Renamed to Prism Player
