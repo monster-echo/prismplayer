@@ -3,9 +3,12 @@ import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
 import { promptAction } from '@kit.ArkUI';
 import { systemShare } from '@kit.ShareKit';
 import { bundleManager } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppConstants, BreakpointType } from '../common/Constants';
+import { Formatters } from '../common/Formatters';
 import { Layout } from '../common/Layout';
 import { AppStore } from '../services/AppStore';
+import { LocalStorageUsage, LocalStorageUsageInfo } from '../services/LocalStorageUsage';
 import { ThemeMode } from '../common/Types';
 
 @ComponentV2
@@ -24,6 +27,80 @@ export struct SettingsView {
 
   @Local store: AppStore = AppStore.getInstance();
   @Local showGroupQr: boolean = false;
+  @Local storageUsage: LocalStorageUsageInfo = new LocalStorageUsageInfo();
+  @Local storageLoaded: boolean = false;
+
+  aboutToAppear(): void {
+    this.refreshStorageUsage();
+  }
+
+  private async refreshStorageUsage(): Promise<void> {
+    hilog.info(0x0001, 'PrismStorage', 'refresh start');
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const usage = await LocalStorageUsage.collect(ctx);
+      this.storageUsage.appBytes = usage.appBytes;
+      this.storageUsage.offlineBytes = usage.offlineBytes;
+      this.storageUsage.cacheBytes = usage.cacheBytes;
+      this.storageUsage.freeBytes = usage.freeBytes;
+      this.storageUsage.totalBytes = usage.totalBytes;
+      this.storageLoaded = true;
+      hilog.info(0x0001, 'PrismStorage',
+        'usage app=%{public}d offline=%{public}d cache=%{public}d free=%{public}d total=%{public}d',
+        usage.appBytes, usage.offlineBytes, usage.cacheBytes, usage.freeBytes, usage.totalBytes);
+    } catch (e) {
+      this.storageLoaded = false;
+      hilog.error(0x0001, 'PrismStorage', 'refresh failed: %{public}s',
+        e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  private canClearStorage(): boolean {
+    return this.storageLoaded &&
+      (this.storageUsage.offlineBytes > 0 || this.storageUsage.cacheBytes > 0);
+  }
+
+  private confirmClearStorage(): void {
+    const u = this.storageUsage;
+    const hasOffline = u.offlineBytes > 0;
+    const parts: string[] = [];
+    if (hasOffline) {
+      parts.push(`${Formatters.formatBytes(u.offlineBytes)} 离线视频`);
+    }
+    if (u.cacheBytes > 0) {
+      parts.push(`${Formatters.formatBytes(u.cacheBytes)} 缓存`);
+    }
+    const tail = hasOffline
+      ? '，已保存的条目会从影库移除；重新扫描片源可恢复。'
+      : '。';
+    this.getUIContext().showAlertDialog({
+      title: hasOffline ? '清空离线影库与缓存' : '清空缓存',
+      message: `将删除 ${parts.join(' 与 ')}${tail}`,
+      primaryButton: {
+        value: '取消',
+        action: () => {}
+      },
+      secondaryButton: {
+        value: '确认清空',
+        fontColor: $r('app.color.danger'),
+        action: () => {
+          this.clearStorage();
+        }
+      }
+    });
+  }
+
+  private async clearStorage(): Promise<void> {
+    try {
+      const freed = await this.store.clearLocalStorage();
+      await this.refreshStorageUsage();
+      promptAction.showToast({ message: `已清空，释放 ${Formatters.formatBytes(freed)}` });
+    } catch (e) {
+      hilog.error(0x0001, 'PrismStorage', 'clear failed: %{public}s',
+        e instanceof Error ? e.message : String(e));
+      promptAction.showToast({ message: '清空失败，请重试' });
+    }
+  }
 
   /** 带品牌图分享：先落一张 card.png 到缓存，再连同文案一起交给系统分享面板。 */
   private async shareApp(): Promise<void> {
@@ -37,11 +114,11 @@ export struct SettingsView {
       const data = new systemShare.SharedData({
         utd: 'general.png',
         uri: fileUri.getUriFromPath(path),
-        title: '棱镜影院 PrismPlayer'
+        title: '棱镜播放器 PrismPlayer'
       });
       data.addRecord({
         utd: 'general.plain-text',
-        content: '棱镜影院：NAS / WebDAV / 私有云播放器\nhttps://appgallery.huawei.com/app/detail?id=tech.zhongbei.prismplayer'
+        content: '棱镜播放器 · 直连 NAS / WebDAV / 私有云\nhttps://appgallery.huawei.com/app/detail?id=tech.zhongbei.prismplayer'
       });
       await new systemShare.ShareController(data).show(ctx, {});
     } catch (_e) {
@@ -129,7 +206,7 @@ export struct SettingsView {
       if (valueText) {
         Text(valueText)
           .fontSize(12)
-          .fontColor($r('app.color.text_muted'))
+          .fontColor($r('app.color.text_body_muted'))
           .maxLines(1)
       }
 
@@ -164,7 +241,7 @@ export struct SettingsView {
       if (valueText) {
         Text(valueText)
           .fontSize(12)
-          .fontColor($r('app.color.text_muted'))
+          .fontColor($r('app.color.text_body_muted'))
           .maxLines(1)
       }
 
@@ -185,7 +262,7 @@ export struct SettingsView {
         .height(240)
         .objectFit(ImageFit.Contain)
         .borderRadius(12)
-      Text('扫码加入棱镜影院官方社群')
+      Text('扫码加入棱镜播放器官方社群')
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
     }
@@ -228,7 +305,7 @@ export struct SettingsView {
           Text('外观')
             .fontSize(12)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_muted'))
+            .fontColor($r('app.color.text_body_muted'))
             .padding({ left: 4 })
 
           Column() {
@@ -240,7 +317,7 @@ export struct SettingsView {
                 .layoutWeight(1)
               Text(this.themeOptionLabel(this.store.settings.themeMode))
                 .fontSize(12)
-                .fontColor($r('app.color.text_muted'))
+                .fontColor($r('app.color.text_body_muted'))
             }
             .width('100%')
             .padding({ left: 14, right: 14, top: 12, bottom: 12 })
@@ -268,7 +345,7 @@ export struct SettingsView {
           Text('播放与影库')
             .fontSize(12)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_muted'))
+            .fontColor($r('app.color.text_body_muted'))
             .padding({ left: 4 })
 
           Column() {
@@ -315,12 +392,103 @@ export struct SettingsView {
         .width('100%')
         .alignItems(HorizontalAlign.Start)
 
+        // Group 1.5: 本地存储占用（只读统计）
+        Column({ space: 6 }) {
+          Row() {
+            Text('存储')
+              .fontSize(12)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_body_muted'))
+
+            Blank()
+
+            if (this.canClearStorage()) {
+              Text('清空')
+                .fontSize(12)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.danger'))
+                .padding({ left: 12, top: 4, bottom: 4 })
+                .onClick(() => this.confirmClearStorage())
+            }
+          }
+          .width('100%')
+          .padding({ left: 4, right: 4 })
+
+          Column() {
+            Row({ space: 12 }) {
+              Text('本应用占用')
+                .fontSize(15)
+                .fontColor($r('app.color.text_primary'))
+                .layoutWeight(1)
+              Text(this.storageLoaded ? Formatters.formatBytes(this.storageUsage.appBytes) : '—')
+                .fontSize(13)
+                .fontColor($r('app.color.text_body_muted'))
+                .maxLines(1)
+            }
+            .width('100%')
+            .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+
+            Divider().color($r('app.color.divider')).margin({ left: 14, right: 14 })
+
+            Row({ space: 12 }) {
+              Text('离线影库')
+                .fontSize(15)
+                .fontColor($r('app.color.text_primary'))
+                .layoutWeight(1)
+              Text(this.storageLoaded ? Formatters.formatBytes(this.storageUsage.offlineBytes) : '—')
+                .fontSize(13)
+                .fontColor($r('app.color.text_body_muted'))
+                .maxLines(1)
+            }
+            .width('100%')
+            .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+
+            Divider().color($r('app.color.divider')).margin({ left: 14, right: 14 })
+
+            Row({ space: 12 }) {
+              Text('缓存')
+                .fontSize(15)
+                .fontColor($r('app.color.text_primary'))
+                .layoutWeight(1)
+              Text(this.storageLoaded ? Formatters.formatBytes(this.storageUsage.cacheBytes) : '—')
+                .fontSize(13)
+                .fontColor($r('app.color.text_body_muted'))
+                .maxLines(1)
+            }
+            .width('100%')
+            .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+
+            Divider().color($r('app.color.divider')).margin({ left: 14, right: 14 })
+
+            Row({ space: 12 }) {
+              Text('设备可用空间')
+                .fontSize(15)
+                .fontColor($r('app.color.text_primary'))
+                .layoutWeight(1)
+              Text(this.storageLoaded && this.storageUsage.totalBytes > 0
+                ? `${Formatters.formatBytes(this.storageUsage.freeBytes)} / ${Formatters.formatBytes(this.storageUsage.totalBytes)}`
+                : '—')
+                .fontSize(13)
+                .fontColor($r('app.color.text_body_muted'))
+                .maxLines(1)
+            }
+            .width('100%')
+            .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+          }
+          .width('100%')
+          .borderRadius(12)
+          .backgroundColor($r('app.color.bg_elevated'))
+          .border({ width: 0.7, color: $r('app.color.border_subtle') })
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+
         // Group 2: Security, Diagnostics & Open-Source
         Column({ space: 6 }) {
           Text('安全、诊断与合规')
             .fontSize(12)
             .fontWeight(FontWeight.Bold)
-            .fontColor($r('app.color.text_muted'))
+            .fontColor($r('app.color.text_body_muted'))
             .padding({ left: 4 })
 
           Column() {
@@ -367,7 +535,7 @@ export struct SettingsView {
           Text('联系与分享')
             .fontSize(12)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_muted'))
+            .fontColor($r('app.color.text_body_muted'))
             .padding({ left: 4 })
 
           Column() {
@@ -399,7 +567,7 @@ export struct SettingsView {
       })
       .width('100%')
       .constraintSize({ maxWidth: Layout.readingMax(this.breakpoint) + Layout.gutter(this.breakpoint) * 2 })
-    }
+    }.edgeEffect(EdgeEffect.Spring)
     .width('100%')
     .height('100%')
     .align(Alignment.Top)

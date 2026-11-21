@@ -145,7 +145,7 @@ struct TmdbConfigPage {
               }
               .padding({ left: 18, right: 18, top: 14, bottom: 32 })
               .width('100%')
-            }
+            }.edgeEffect(EdgeEffect.Spring)
             .layoutWeight(1)
             .width('100%')
             .align(Alignment.TopStart)

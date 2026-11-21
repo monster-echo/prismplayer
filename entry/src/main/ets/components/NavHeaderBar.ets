@@ -61,7 +61,7 @@ export struct NavHeaderBar {
         if (this.subtitle) {
           Text(this.subtitle)
             .fontSize(11)
-            .fontColor($r('app.color.text_muted'))
+            .fontColor($r('app.color.text_body_muted'))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }

@@ -44,7 +44,7 @@ struct AboutPrivacyPage {
                 Row({ space: 14 }) {
                   Image($r('app.media.ic_brand_prism')).width(52).height(52)
                   Column({ space: 3 }) {
-                    Text('棱镜影院 PrismPlayer').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
+                    Text('棱镜播放器 PrismPlayer').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
                     Text(`HarmonyOS NEXT · 手机 / 平板 / 鸿蒙电脑跨端版${this.versionText ? ' · ' + this.versionText : ''}`)
                     .fontSize(12).fontColor($r('app.color.text_secondary'))
                   }
@@ -157,7 +157,7 @@ struct AboutPrivacyPage {
               }
               .padding({ left: 18, right: 18, top: 14, bottom: 32 })
               .width('100%')
-            }
+            }.edgeEffect(EdgeEffect.Spring)
             .layoutWeight(1)
             .width('100%')
             .align(Alignment.TopStart)

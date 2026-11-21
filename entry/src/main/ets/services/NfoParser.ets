@@ -8,6 +8,8 @@ export interface NfoMetadata {
   seasonNo: number;
   episodeNo: number;
   posterUrl: string;
+  /** `<thumb>` 原值：可能是相对文件名，交由调用方按本地图片解析 */
+  thumbRaw: string;
 }
 
 export class NfoParser {
@@ -47,7 +49,8 @@ export class NfoParser {
       tmdbId: tmdbRaw ? (parseInt(tmdbRaw, 10) || 0) : 0,
       seasonNo: seasonRaw ? (parseInt(seasonRaw, 10) || 1) : 1,
       episodeNo: episodeRaw ? (parseInt(episodeRaw, 10) || 0) : 0,
-      posterUrl: posterUrl.startsWith('http') ? posterUrl : ''
+      posterUrl: posterUrl.startsWith('http') ? posterUrl : '',
+      thumbRaw: posterUrl
     };
   }
 }

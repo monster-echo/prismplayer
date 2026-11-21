@@ -92,7 +92,7 @@ struct SubtitlePrefsPage {
               }
               .padding({ left: 18, right: 18, top: 10, bottom: 36 })
               .width('100%')
-            }
+            }.edgeEffect(EdgeEffect.Spring)
             .layoutWeight(1)
             .backgroundColor($r('app.color.bg_primary'))
             .align(Alignment.TopStart)

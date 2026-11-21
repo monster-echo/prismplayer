@@ -6,11 +6,11 @@
     },
     {
       "name": "EntryAbility_desc",
-      "value": "PrismPlayer 棱镜影院主入口"
+      "value": "PrismPlayer 棱镜播放器主入口"
     },
     {
       "name": "EntryAbility_label",
-      "value": "棱镜影院"
+      "value": "棱镜播放器"
     },
     {
       "name": "widget_continue_display_name",
@@ -31,6 +31,14 @@
     {
       "name": "reason_distributed_datasync",
       "value": "用于把你的播放进度与片源配置接续到同账号的其它鸿蒙设备"
+    },
+    {
+      "name": "share_ext_label",
+      "value": "分享到棱镜播放器"
+    },
+    {
+      "name": "share_ext_desc",
+      "value": "把链接直接交给棱镜播放器播放"
     }
   ]
 }

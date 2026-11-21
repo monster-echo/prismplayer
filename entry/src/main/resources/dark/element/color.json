@@ -82,7 +82,7 @@
     },
     {
       "name": "danger",
-      "value": "#EF4444"
+      "value": "#F05252"
     },
     {
       "name": "fill_subtle",
@@ -103,6 +103,10 @@
     {
       "name": "scrim_backdrop",
       "value": "#9905060A"
+    },
+    {
+      "name": "text_body_muted",
+      "value": "#8A92A0"
     }
   ]
 }

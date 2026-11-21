@@ -12,17 +12,30 @@ struct ProStorePage {
   @Local selectedIndex: number = 0;
   @Local busy: boolean = false;
   @Local statusMsg: string = '';
+  /** 价格是否真的来自应用市场；未同步时页面不展示任何售价。 */
+  @Local priceKnown: boolean = false;
+  @Local iapSupported: boolean = IapService.isSupported();
 
   aboutToAppear(): void {
+    if (!this.iapSupported) return;
     const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    IapService.queryProducts(ctx).then((list) => {
-      this.products = list;
+    IapService.queryProducts(ctx).then((catalog) => {
+      this.products = catalog.items;
+      this.priceKnown = catalog.fromStore;
     });
   }
 
   onBackPress(): boolean {
     this.getUIContext().getRouter().back();
     return true;
+  }
+
+  private buyLabel(): string {
+    if (this.busy) return '正在拉起华为支付...';
+    if (this.store.isPro) return '已激活永久买断权益';
+    if (!this.iapSupported) return '当前设备不支持内购';
+    const price = this.priceKnown ? this.products[this.selectedIndex]?.priceText : '';
+    return price ? `立即买断解锁 ${price}` : '立即买断解锁';
   }
 
   @Builder
@@ -62,7 +75,7 @@ struct ProStorePage {
       NavHeaderBar({
         title: 'PrismPlayer Pro 会员',
         subtitle: '一次买断 · 手机 / 平板 / 鸿蒙电脑三端通用',
-        rightLabel: '恢复购买',
+        rightLabel: this.iapSupported ? '恢复购买' : '',
         onBack: () => this.getUIContext().getRouter().back(),
         onRightAction: async () => {
           this.busy = true;
@@ -87,7 +100,7 @@ struct ProStorePage {
                   Row({ space: 12 }) {
                     Image($r('app.media.ic_pro_crown')).width(44).height(44)
                     Column({ space: 3 }) {
-                      Text(this.store.isPro ? 'PrismPlayer Pro 已永久激活' : '解锁专业私有云影院完整体验')
+                      Text(this.store.isPro ? 'PrismPlayer Pro 已永久激活' : '解锁专业私有云播放完整体验')
                       .fontSize(18)
                       .fontWeight(FontWeight.Bold)
                       .fontColor($r('app.color.accent_gold'))
@@ -149,19 +162,21 @@ struct ProStorePage {
                       .layoutWeight(1)
                       .alignItems(HorizontalAlign.Start)
 
-                      Column({ space: 2 }) {
-                        if (prod.originalPriceText) {
-                          Text(prod.originalPriceText)
-                          .fontSize(12)
-                          .fontColor($r('app.color.text_muted'))
-                          .decoration({ type: TextDecorationType.LineThrough, color: $r('app.color.text_muted') })
+                      if (this.priceKnown) {
+                        Column({ space: 2 }) {
+                          if (prod.originalPriceText) {
+                            Text(prod.originalPriceText)
+                            .fontSize(12)
+                            .fontColor($r('app.color.text_body_muted'))
+                            .decoration({ type: TextDecorationType.LineThrough, color: $r('app.color.text_muted') })
+                          }
+                          Text(prod.priceText)
+                          .fontSize(22)
+                          .fontWeight(FontWeight.Bold)
+                          .fontColor(this.selectedIndex === idx ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
                         }
-                        Text(prod.priceText)
-                        .fontSize(22)
-                        .fontWeight(FontWeight.Bold)
-                        .fontColor(this.selectedIndex === idx ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
+                        .alignItems(HorizontalAlign.End)
                       }
-                      .alignItems(HorizontalAlign.End)
                     }
                     .width('100%')
                     .padding(16)
@@ -187,18 +202,14 @@ struct ProStorePage {
               }
               .padding({ left: 18, right: 18, top: 14, bottom: 24 })
               .width('100%')
-            }
+            }.edgeEffect(EdgeEffect.Spring)
             .layoutWeight(1)
             .width('100%')
             .align(Alignment.TopStart)
             .scrollBar(BarState.Off)
 
             Row({ space: 12 }) {
-              Button(
-              this.busy
-              ? '正在拉起华为支付...'
-              : (this.store.isPro ? '已激活永久买断权益' : `立即买断解锁 ${this.products[this.selectedIndex]?.priceText || '¥48'}`)
-              )
+              Button(this.buyLabel())
               .layoutWeight(1)
               .height(48)
               .fontSize(15)
@@ -206,7 +217,7 @@ struct ProStorePage {
               .fontColor(this.store.isPro ? $r('app.color.accent_gold') : Color.White)
               .backgroundColor(this.store.isPro ? '#24F5B841' : $r('app.color.accent_blue'))
               .borderRadius(12)
-              .enabled(!this.busy && !this.store.isPro)
+              .enabled(!this.busy && !this.store.isPro && this.iapSupported)
               .onClick(async () => {
                 this.busy = true;
                 const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;

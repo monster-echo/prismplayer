@@ -67,17 +67,17 @@ export struct LibraryView {
 
   build() {
     Column() {
-        // Sleek Cinema Header + Icon Search & Import（固定 header）
+        // Sleek Cinema Header + Icon Search（固定 header）
         Row({ space: 10 }) {
           Row({ space: 10 }) {
             if (this.breakpoint === 'sm') {
               Image($r('app.media.ic_brand_prism'))
-                .width(34)
-                .height(34)
+                .width(36)
+                .height(36)
             }
-            Column({ space: 2 }) {
-              Text('棱镜影院')
-                .fontSize(25)
+            Column({ space: 1 }) {
+              Text('棱镜播放器')
+                .fontSize(21)
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.text_primary'))
               Text(
@@ -85,13 +85,15 @@ export struct LibraryView {
                   ? this.store.scanStatusText
                   : `${this.getFilteredMovies().length} 部电影 · ${this.getFilteredSeries().length} 部剧集`
               )
-                .fontSize(12)
-                .fontColor(this.store.isScanning ? $r('app.color.accent_blue') : $r('app.color.text_muted'))
+                .fontSize(11)
+                .fontColor(this.store.isScanning ? $r('app.color.accent_blue') : $r('app.color.text_body_muted'))
                 .maxLines(1)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
-            }.alignItems(HorizontalAlign.Start)
+            }
+            .alignItems(HorizontalAlign.Start)
           }
           .layoutWeight(1)
+          .alignItems(VerticalAlign.Center)
 
           Button({ type: ButtonType.Circle }) {
             SymbolGlyph($r('sys.symbol.magnifyingglass'))
@@ -103,26 +105,6 @@ export struct LibraryView {
           .backgroundColor($r('app.color.bg_elevated'))
           .border({ width: 0.8, color: $r('app.color.fill_strong') })
           .onClick(() => this.onOpenSearch())
-
-          Button() {
-            Row({ space: 5 }) {
-              SymbolGlyph($r('sys.symbol.plus'))
-                .fontSize(14)
-                .fontColor([Color.White])
-              Text('导入')
-                .fontSize(13)
-                .fontWeight(FontWeight.Medium)
-                .fontColor(Color.White)
-            }
-          }
-          .height(38)
-          .padding({ left: 13, right: 14 })
-          .backgroundColor($r('app.color.accent_blue'))
-          .borderRadius(12)
-          .shadow({ radius: 10, color: '#4D5E8BFF', offsetX: 0, offsetY: 3 })
-          .onClick(() => {
-            this.store.importLocalVideos();
-          })
         }
         .padding({
           left: Layout.gutter(this.breakpoint),
@@ -201,7 +183,7 @@ export struct LibraryView {
                 if (this.getHeroItem()!.rating > 0) {
                   Row({ space: 3 }) {
                     SymbolGlyph($r('sys.symbol.star_fill'))
-                      .fontSize(10)
+                      .fontSize(12)
                       .fontColor([$r('app.color.accent_gold')])
                     Text(this.getHeroItem()!.rating.toFixed(1))
                       .fontSize(10)
@@ -371,7 +353,7 @@ export struct LibraryView {
                   })
                 }, (rec: WatchHistoryRecord) => rec.itemId)
               }
-            }
+            }.edgeEffect(EdgeEffect.Spring)
             .scrollable(ScrollDirection.Horizontal)
             .align(Alignment.TopStart)
             .scrollBar(BarState.Off)
@@ -405,8 +387,12 @@ export struct LibraryView {
               action: () => this.onGoSources()
             },
             {
-              value: '导入本地视频',
+              value: '选择视频文件导入',
               action: () => { this.store.importLocalVideos(); }
+            },
+            {
+              value: '选择文件夹批量导入',
+              action: () => { this.store.importLocalFolder(); }
             },
             {
               value: this.store.vaultUnlocked ? '锁定私密空间' : '私密文件夹解锁 / 管理',
@@ -417,10 +403,6 @@ export struct LibraryView {
                   this.onOpenVault();
                 }
               }
-            },
-            {
-              value: '恢复示例影库',
-              action: () => { this.store.seedOpenShowcaseLibrary(); }
             }
           ], appMenuOptions())
         }
@@ -513,7 +495,7 @@ export struct LibraryView {
               .fontColor($r('app.color.text_primary'))
             Text('添加 WebDAV / Alist 网盘源自动刮削海报墙，或导入本地视频')
               .fontSize(13)
-              .fontColor($r('app.color.text_muted'))
+              .fontColor($r('app.color.text_body_muted'))
               .textAlign(TextAlign.Center)
             Row({ space: 10 }) {
               Button('添加 WebDAV / Alist')
@@ -523,14 +505,14 @@ export struct LibraryView {
                 .backgroundColor($r('app.color.accent_blue'))
                 .borderRadius(10)
                 .onClick(() => this.onGoSources())
-              Button('恢复演示影库')
+              Button('导入本地视频')
                 .height(38)
                 .fontSize(13)
                 .fontColor($r('app.color.text_primary'))
                 .backgroundColor($r('app.color.bg_elevated'))
                 .borderRadius(10)
                 .onClick(() => {
-                  this.store.seedOpenShowcaseLibrary();
+                  this.store.importLocalVideos();
                 })
             }
           }
@@ -546,7 +528,7 @@ export struct LibraryView {
       })
       .width('100%')
       .constraintSize({ maxWidth: Layout.contentMax(this.breakpoint) + Layout.gutter(this.breakpoint) * 2 })
-    }
+    }.edgeEffect(EdgeEffect.Spring)
     .width('100%')
     .height('100%')
     .align(Alignment.Top)

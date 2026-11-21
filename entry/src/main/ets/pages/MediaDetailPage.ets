@@ -236,7 +236,7 @@ struct MediaDetailPage {
                   Text(this.getTitle().split(' (')[0])
                     .fontSize(11)
                     .fontWeight(FontWeight.Bold)
-                    .fontColor($r('app.color.text_primary'))
+                    .fontColor(Color.White)
                     .maxLines(2)
                     .textAlign(TextAlign.Center)
                     .padding({ left: 6, right: 6 })
@@ -286,7 +286,7 @@ struct MediaDetailPage {
                   if (this.getRating() > 0) {
                     Row({ space: 4 }) {
                       SymbolGlyph($r('sys.symbol.star_fill'))
-                        .fontSize(11)
+                        .fontSize(12)
                         .fontColor([$r('app.color.accent_gold')])
                       Text(this.getRating().toFixed(1))
                         .fontSize(11)
@@ -442,7 +442,7 @@ struct MediaDetailPage {
                   Blank()
                   Text(this.getSource(this.movie.sourceId)?.name || '本地媒体库')
                     .fontSize(12)
-                    .fontColor($r('app.color.text_muted'))
+                    .fontColor($r('app.color.text_body_muted'))
                   SymbolGlyph(this.showTechInfo ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
                     .fontSize(13)
                     .fontColor([$r('app.color.text_muted')])
@@ -507,7 +507,7 @@ struct MediaDetailPage {
                           if (ep.fileSize > 0) {
                             Text(Formatters.formatBytes(ep.fileSize))
                               .fontSize(11)
-                              .fontColor($r('app.color.text_muted'))
+                              .fontColor($r('app.color.text_body_muted'))
                           }
                           if (ep.subtitleUrl) {
                             Image($r('app.media.ic_file_subtitle')).width(14).height(14)
@@ -555,7 +555,7 @@ struct MediaDetailPage {
           .width('100%')
         }
         .width('100%')
-      }
+      }.edgeEffect(EdgeEffect.Spring)
       .width('100%')
       .height('100%')
       .align(Alignment.Top)
@@ -668,19 +668,19 @@ struct MediaDetailPage {
                     if (cand.originalTitle && cand.originalTitle !== cand.title) {
                       Text(cand.originalTitle)
                         .fontSize(11)
-                        .fontColor($r('app.color.text_muted'))
+                        .fontColor($r('app.color.text_body_muted'))
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                     }
                     if (cand.year > 0) {
                       Text(`${cand.year}`)
                         .fontSize(11)
-                        .fontColor($r('app.color.text_muted'))
+                        .fontColor($r('app.color.text_body_muted'))
                     }
                     if (cand.rating > 0) {
                       Row({ space: 3 }) {
                         SymbolGlyph($r('sys.symbol.star_fill'))
-                          .fontSize(10)
+                          .fontSize(12)
                           .fontColor([$r('app.color.accent_gold')])
                         Text(cand.rating.toFixed(1))
                           .fontSize(11)
@@ -705,7 +705,7 @@ struct MediaDetailPage {
             }, (cand: TmdbCandidate) => `${cand.kind}_${cand.tmdbId}`)
           }
           .width('100%')
-        }
+        }.edgeEffect(EdgeEffect.Spring)
         .layoutWeight(1)
         .width('100%')
         .align(Alignment.TopStart)
@@ -795,7 +795,7 @@ struct MediaDetailPage {
     Row({ space: 12 }) {
       Text(label)
         .fontSize(12)
-        .fontColor($r('app.color.text_muted'))
+        .fontColor($r('app.color.text_body_muted'))
         .width(66)
       Text(val)
         .fontSize(12)

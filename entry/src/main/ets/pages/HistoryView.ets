@@ -77,7 +77,7 @@ export struct HistoryView {
               .fontColor($r('app.color.text_primary'))
             Text(`共 ${this.store.getVisibleWatchHistory().length} 条续播记录`)
               .fontSize(12)
-              .fontColor($r('app.color.text_muted'))
+              .fontColor($r('app.color.text_body_muted'))
           }.alignItems(HorizontalAlign.Start)
 
           Blank()
@@ -109,7 +109,7 @@ export struct HistoryView {
               .fontColor($r('app.color.text_primary'))
             Text('播放任意本地、SMB、Plex 或 WebDAV 视频后，这里会自动保存续播断点')
               .fontSize(13)
-              .fontColor($r('app.color.text_muted'))
+              .fontColor($r('app.color.text_body_muted'))
           }
           .width('100%')
           .padding({ top: 64 })
@@ -159,7 +159,7 @@ export struct HistoryView {
                         ` · ${Formatters.formatRelativeTime(rec.updatedAt)}`
                       )
                         .fontSize(12)
-                        .fontColor($r('app.color.text_muted'))
+                        .fontColor($r('app.color.text_body_muted'))
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
 
@@ -224,7 +224,7 @@ export struct HistoryView {
             .columnsGap(12)
             .rowsGap(12)
             .width('100%')
-          }
+          }.edgeEffect(EdgeEffect.Spring)
           .height('100%')
           .width('100%')
           .align(Alignment.TopStart)

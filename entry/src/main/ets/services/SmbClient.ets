@@ -197,6 +197,23 @@ export class SmbClient {
     return entries;
   }
 
+  /** 读取 SMB 上的二进制小文件（海报等）。 */
+  static async fetchBytes(urlOrPath: string, source: MediaSource, maxBytes: number = 16 * 1024 * 1024): Promise<ArrayBuffer> {
+    const parsed = SmbClient.parseSource(source);
+    const rel = SmbClient.extractRelPathFromUrl(source, urlOrPath);
+    return prismNative.smbReadFileBytes(
+      {
+        host: parsed.host,
+        port: parsed.port,
+        share: parsed.share,
+        username: parsed.username,
+        password: parsed.password
+      },
+      rel,
+      maxBytes
+    );
+  }
+
   static async fetchText(urlOrPath: string, source: MediaSource): Promise<string> {
     const parsed = SmbClient.parseSource(source);
     const rel = SmbClient.extractRelPathFromUrl(source, urlOrPath);

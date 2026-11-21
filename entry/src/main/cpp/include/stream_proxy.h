@@ -140,7 +140,10 @@ private:
     void PutCachedBlock(const std::string& streamId, int64_t blockIndex, std::vector<uint8_t> data);
     void EvictStreamCache(const std::string& streamId);
 
-    static constexpr int64_t kBlockSize = 512 * 1024; // 512KB chunk
+    // 与单次 SMB READ 上限对齐，块越大往返越少
+    static constexpr int64_t kBlockSize = 1024 * 1024;
+    // HEAD 探测只需拿到大小，不必拉整块
+    static constexpr int64_t kProbeSize = 512 * 1024;
 
     std::atomic<bool> running_{false};
     int listenFd_ = -1;

@@ -59,7 +59,7 @@ struct LegalDocPage {
         Text('•')
           .fontSize(14)
           .lineHeight(23)
-          .fontColor($r('app.color.text_muted'))
+          .fontColor($r('app.color.text_body_muted'))
         Text(block.text)
           .fontSize(14)
           .lineHeight(23)
@@ -84,7 +84,7 @@ struct LegalDocPage {
     Column() {
       NavHeaderBar({
         title: navTitleFor(this.docType),
-        subtitle: '棱镜影院 PrismPlayer',
+        subtitle: '棱镜播放器 PrismPlayer',
         onBack: () => this.getUIContext().getRouter().back()
       })
 
@@ -99,7 +99,7 @@ struct LegalDocPage {
           .width('100%')
           .alignItems(HorizontalAlign.Start)
           .padding({ left: 20, right: 20, top: 12 })
-        }
+        }.edgeEffect(EdgeEffect.Spring)
         .width('100%')
         .height('100%')
         .scrollBar(BarState.Off)

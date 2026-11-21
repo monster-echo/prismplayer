@@ -1,4 +1,5 @@
 #include "smb2_client.h"
+#include <ctime>
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -572,6 +573,19 @@ Smb2Session::~Smb2Session() {
 
 void Smb2Session::Disconnect() {
     if (sockFd_ >= 0) {
+        // 优雅关闭：先 TREE_DISCONNECT 再 LOGOFF。只 close 的话服务端会把这个会话
+        // 挂到自身超时才回收；反复重连（重启、读失败重试）会堆积僵尸会话，
+        // 表现为连接越来越慢，最终直接失败。
+        auto bestEffort = [this](uint16_t command, uint32_t treeId) {
+            std::vector<uint8_t> body(4, 0);
+            PutU16(body, 0, 4);  // StructureSize
+            uint32_t st = 0;
+            std::vector<uint8_t> hdr, resp;
+            std::string err;
+            SendSmb2Packet(command, 1, treeId, body, st, hdr, resp, err);
+        };
+        if (treeConnected_ && treeId_ != 0) bestEffort(0x0004, treeId_);  // TREE_DISCONNECT
+        if (sessionId_ != 0) bestEffort(0x0002, 0);                       // LOGOFF
         close(sockFd_);
         sockFd_ = -1;
     }
@@ -724,7 +738,9 @@ bool Smb2Session::DoNegotiate(std::string& errOut) {
     if (respBody.size() >= 40) {
         uint32_t serverMaxRead = GetU32(respBody.data() + 32);
         if (serverMaxRead >= 65536) {
-            maxReadSize_ = std::min<uint32_t>(serverMaxRead, 524288U);
+            // 每次 READ 的固定开销远大于传输本身（实测 512KB/读 ≈300ms），
+            // 上限从 512KB 提到 1MB：信用计费 16，仍在请求的 32 之内。
+            maxReadSize_ = std::min<uint32_t>(serverMaxRead, 1048576U);
         }
     }
     return true;

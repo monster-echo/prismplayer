@@ -48,7 +48,7 @@ struct ShortcutsPage {
               }
               .padding({ left: 18, right: 18, top: 14, bottom: 32 })
               .width('100%')
-            }
+            }.edgeEffect(EdgeEffect.Spring)
             .layoutWeight(1)
             .backgroundColor($r('app.color.bg_primary'))
             .align(Alignment.TopStart)

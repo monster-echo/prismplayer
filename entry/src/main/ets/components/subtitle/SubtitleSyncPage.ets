@@ -113,7 +113,7 @@ export struct SubtitleSyncPage {
         }
         .padding({ left: 18, right: 18, top: 8, bottom: 36 })
         .width('100%')
-      }
+      }.edgeEffect(EdgeEffect.Spring)
       .layoutWeight(1)
       .width('100%')
       .align(Alignment.TopStart)

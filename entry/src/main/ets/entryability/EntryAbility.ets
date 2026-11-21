@@ -6,7 +6,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppConstants, BreakpointType } from '../common/Constants';
 import { Layout } from '../common/Layout';
 import { ThemeManager } from '../common/ThemeManager';
-import { ThemeMode } from '../common/Types';
+import { OnlineMediaParams, ThemeMode } from '../common/Types';
 import { AppStore } from '../services/AppStore';
 import { ContinuePayload, PlaybackHandoff } from '../services/PlaybackHandoff';
 import { ShareService } from '../services/ShareService';
@@ -23,6 +23,8 @@ const DOMAIN = 0x0001;
 export default class EntryAbility extends UIAbility {
   private mainWindow: window.Window | null = null;
   private pendingContinue: ContinuePayload | null = null;
+  /** 分享扩展送进来的链接，等 store 就绪后跳「视频解析」页。 */
+  private pendingUrl: string = '';
   private pendingMenuCode: string = '';
   private pendingItemId: string = '';
   private pendingPositionMs: number = 0;
@@ -129,6 +131,14 @@ export default class EntryAbility extends UIAbility {
       }
     }
 
+    // 分享扩展送进来的链接：直接进「视频解析」页并预填
+    const sharedUrl: string = this.readParam(want, 'sharedUrl');
+    if (sharedUrl) {
+      this.pendingUrl = sharedUrl;
+      this.pendingMenuCode = 'online';
+      return;
+    }
+
     const menuCode: string = this.readParam(want, 'menuCode');
     if (menuCode) {
       this.pendingMenuCode = menuCode;
@@ -170,6 +180,13 @@ export default class EntryAbility extends UIAbility {
         }
         if (code === 'library') {
           store.requestTab(1);
+          return;
+        }
+        if (code === 'online' && this.pendingUrl) {
+          const params: OnlineMediaParams = { clipboardUrl: this.pendingUrl };
+          this.pendingUrl = '';
+          store.requestTab(0);
+          store.requestRoute('pages/OnlineMediaPage', params);
           return;
         }
       }

@@ -2,6 +2,7 @@ import { rcp } from '@kit.RemoteCommunicationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { Formatters } from '../common/Formatters';
 import { MediaItem, MediaSource, RemoteFileEntry, SubtitleTrackOption } from '../common/Types';
+import { HttpHelper } from './HttpHelper';
 import { WebDavTestResult } from './WebDavClient';
 
 interface PlexDirectoryObj {
@@ -70,6 +71,25 @@ interface PlexRootResp {
   MediaContainer?: PlexMediaContainer;
 }
 
+interface PlexSignInUser {
+  authToken?: string;
+  username?: string;
+  email?: string;
+}
+
+interface PlexSignInResp {
+  user?: PlexSignInUser;
+}
+
+interface PlexSignInBodyUser {
+  login: string;
+  password: string;
+}
+
+interface PlexSignInBody {
+  user: PlexSignInBodyUser;
+}
+
 export class PlexClient {
   private static session: rcp.Session | null = null;
 
@@ -78,6 +98,43 @@ export class PlexClient {
       PlexClient.session = rcp.createSession();
     }
     return PlexClient.session;
+  }
+
+  /**
+   * 用 Plex 账号密码向 plex.tv 换取 X-Plex-Token。
+   * 账号密码只用于这一次请求，不写入片源配置；开启两步验证的账号会失败，需手动填 Token。
+   */
+  static async signIn(login: string, password: string): Promise<string> {
+    const user: PlexSignInBodyUser = { login: login.trim(), password: password };
+    const payload: PlexSignInBody = { user: user };
+    const body = JSON.stringify(payload);
+    const resp = await HttpHelper.requestText('https://plex.tv/users/sign_in.json', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'X-Plex-Client-Identifier': 'PrismPlayerHarmony',
+        'X-Plex-Product': 'PrismPlayer',
+        'X-Plex-Version': '1.0.4'
+      },
+      body,
+      timeoutMs: 15000
+    });
+    if (resp.statusCode >= 200 && resp.statusCode < 300) {
+      let parsed: PlexSignInResp = {};
+      try {
+        parsed = JSON.parse(resp.body) as PlexSignInResp;
+      } catch (_e) {
+        throw new Error('Plex 返回内容无法解析');
+      }
+      const token = parsed.user?.authToken || '';
+      if (token) return token;
+      throw new Error('Plex 登录成功但没有返回 Token');
+    }
+    if (resp.statusCode === 401) {
+      throw new Error('账号或密码不正确；开启两步验证的账号请直接填 Token');
+    }
+    throw new Error(`Plex 登录失败（HTTP ${resp.statusCode}）`);
   }
 
   static normalizeBaseUrl(rawUrl: string): string {

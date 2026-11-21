@@ -185,6 +185,17 @@ export interface PlayerLaunchParams {
   playbackRate?: number;
 }
 
+/** 外部来源请求的一次页面跳转。 */
+export interface RouteRequest {
+  url: string;
+  params: Object;
+}
+
+export interface OnlineMediaParams {
+  /** 从首页「剪贴板链接」快捷入口带过来的链接，进页面即预填。 */
+  clipboardUrl?: string;
+}
+
 export interface LegalDocParams {
   docType: 'privacy' | 'agreement';
 }

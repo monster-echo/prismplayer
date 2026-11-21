@@ -5,6 +5,7 @@ import {
   MediaItem,
   MediaSource,
   PlayerLaunchParams,
+  RouteRequest,
   SeriesGroup,
   SourceBrowserParams,
   SourceFormParams
@@ -35,6 +36,12 @@ struct Index {
     });
     this.store.registerTabHandler((index: number) => {
       this.activeTab = index;
+    });
+    // 分享扩展等外部来源直接指定页面
+    this.store.registerRouteHandler((req: RouteRequest) => {
+      setTimeout(() => {
+        this.pushRoute(req.url, req.params);
+      }, 30);
     });
   }
 
@@ -163,7 +170,7 @@ struct Index {
       Text(label)
         .fontSize(10)
         .fontWeight(this.activeTab === index ? FontWeight.Bold : FontWeight.Normal)
-        .fontColor(this.activeTab === index ? $r('app.color.accent_blue') : $r('app.color.text_muted'))
+        .fontColor(this.activeTab === index ? $r('app.color.accent_blue') : $r('app.color.text_body_muted'))
     }
     .layoutWeight(1)
     .height('100%')
@@ -231,13 +238,13 @@ struct Index {
 
               if (!this.railMode()) {
                 Column({ space: 1 }) {
-                  Text('棱镜影院')
+                  Text('棱镜播放器')
                     .fontSize(15)
                     .fontWeight(FontWeight.Bold)
                     .fontColor($r('app.color.text_primary'))
                   Text('PrismPlayer')
                     .fontSize(10)
-                    .fontColor($r('app.color.text_muted'))
+                    .fontColor($r('app.color.text_body_muted'))
                 }.alignItems(HorizontalAlign.Start)
               }
             }
@@ -246,7 +253,7 @@ struct Index {
             .justifyContent(this.railMode() ? FlexAlign.Center : FlexAlign.Start)
             .onClick(() => this.toggleSidebar())
 
-            this.navItem(0, '棱镜影院')
+            this.navItem(0, '棱镜播放器')
             this.navItem(1, '片源管理')
             this.navItem(2, '最近观看')
             this.navItem(3, '设置与 Pro')
@@ -263,9 +270,9 @@ struct Index {
                     .fontColor($r('app.color.accent_gold'))
                     .maxLines(1)
                 }
-                Text(this.store.isPro ? '手机+平板+PC 通用' : '¥38 起 · 无限源/4K/ASS')
+                Text(this.store.isPro ? '手机+平板+PC 通用' : '无限源 / 4K / ASS 字幕')
                   .fontSize(11)
-                  .fontColor($r('app.color.text_muted'))
+                  .fontColor($r('app.color.text_body_muted'))
                   .maxLines(1)
               }
               .width('100%')

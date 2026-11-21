@@ -123,6 +123,22 @@ export const setPlayerEventCallback: (playerId: number, callback: (event: Native
 
 export const probeLocalMedia: (fd: number, offset: number, size: number) => LocalMediaMeta;
 
+/** 查询本机是否有该 mime 的硬件视频解码器；supported=false 时应降级软解。 */
+export const queryVideoDecoderCapability: (mime: string) => VideoDecoderCapability;
+
+export interface VideoDecoderCapability {
+  supported: boolean;
+  name: string;
+}
+
 export const smbTestConnection: (config: SmbNativeConfig, initialPath?: string) => Promise<SmbNativeTestResult>;
 export const smbListDirectory: (config: SmbNativeConfig, dirPath: string) => Promise<SmbNativeListResult>;
 export const smbReadTextFile: (config: SmbNativeConfig, filePath: string, maxBytes?: number) => Promise<string>;
+export const smbReadFileBytes: (config: SmbNativeConfig, filePath: string, maxBytes?: number) => Promise<ArrayBuffer>;
+
+export interface RarExtractResult {
+  ok: boolean;
+  error: string;
+  names: string[];
+}
+export const rarExtractTo: (archivePath: string, destDir: string) => Promise<RarExtractResult>;

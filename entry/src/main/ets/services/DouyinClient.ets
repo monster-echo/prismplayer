@@ -1,5 +1,7 @@
 import { common } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { Formatters } from '../common/Formatters';
 import { MediaItem, MediaSource, RemoteFileEntry, parseSourceExtra } from '../common/Types';
@@ -28,6 +30,17 @@ export interface LocalVideoSaveResult {
   fileSize: number;
   exportedUri: string;
   message: string;
+  /** 沙箱内已落盘离线副本；false 表示本次没有写入离线影库 */
+  offline: boolean;
+}
+
+export interface LocalVideoSaveOptions {
+  /** 下载完成后再调系统文件选择器另存一份 */
+  exportToSystemPicker?: boolean;
+  /** 决定扩展名的片源文件名（如 xxx.mkv） */
+  fileNameHint?: string;
+  /** 已接收字节数，节流后回调 */
+  onProgress?: (receivedBytes: number) => void;
 }
 
 interface DouyinUrlListWrap {
@@ -98,15 +111,13 @@ export class DouyinClient {
   static readonly MOBILE_UA =
     'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
 
-  static readonly DEMO_SHARE_TEXT =
-    '7.97 :6pm rRX:/ Z@Z.mQ 01/22 详细解读电影淮海战役 邱清泉这手徐东大捷玩的很六  https://v.douyin.com/C2Mfnq9YWLs/ 复制此链接，打开Dou音搜索，直接观看视频！';
-
   private static readonly DEFAULT_TTWID_COOKIE =
     'ttwid=1%7C0dnaOXA3AeOTOwckZDvt2Y2invtHK0cItKlUIjG9Wck%7C1795049712%7Cb6cf34aed94ec5d7ecd907d7fd4bc4a13fa68a650f32ab2fa87b762d4deb8c9b';
 
-  private static readonly DEMO_VIDEO_STREAM = 'https://media.w3.org/2010/05/bunny/trailer.mp4';
-
   private static dlSession: rcp.Session | null = null;
+
+  /** 本地/导出拷贝的分块大小 */
+  private static readonly COPY_CHUNK_BYTES = 4 * 1024 * 1024;
 
   private static getDownloadSession(): rcp.Session {
     if (!DouyinClient.dlSession) {
@@ -232,28 +243,16 @@ export class DouyinClient {
       throw new Error('未识别到有效的抖音分享链接，请粘贴包含 v.douyin.com 或 douyin.com 的分享文本');
     }
 
-    // 1. Built-in demo share command or direct MP4 URL in share text
+    // 1. 分享文本里本身就是视频直链时，不需要解析抖音页面
     const lowerUrl = shareUrl.toLowerCase();
-    if (lowerUrl.includes('c2mfnq9ywls') || shareUrl.includes('7701747034973293833')) {
+    if (Formatters.isVideoFile(lowerUrl.split('?')[0])) {
       return {
-        awemeId: '7701747034973293833',
-        title: caption.title || '详细解读电影淮海战役 邱清泉这手徐东大捷玩的很六',
-        author: caption.author !== '抖音创作者' ? caption.author : '山河旧影客',
-        coverUrl: 'local://poster_scifi',
-        playUrl: 'https://aweme.snssdk.com/aweme/v1/play/?line=0&logo_name=aweme_diversion_search&ratio=720p&video_id=v0300fg10000dbh1i07og65o24kqemo0',
+        awemeId: `direct_${Date.now()}`,
+        title: caption.title || '视频',
+        author: caption.author,
+        coverUrl: '',
+        playUrl: shareUrl,
         durationMs: 0,
-        shareUrl
-      };
-    }
-    if (lowerUrl.includes('iprismcinemademo') || lowerUrl.includes('prismdemo') || Formatters.isVideoFile(lowerUrl.split('?')[0])) {
-      const directStream = Formatters.isVideoFile(lowerUrl.split('?')[0]) ? shareUrl : DouyinClient.DEMO_VIDEO_STREAM;
-      return {
-        awemeId: '7398888888888888888',
-        title: caption.title || '纯血鸿蒙 4K 开源动画大雄兔无水印高帧率演示片段',
-        author: caption.author || '棱镜影院官方',
-        coverUrl: 'local://poster_bbb',
-        playUrl: directStream,
-        durationMs: 32000,
         shareUrl
       };
     }
@@ -329,20 +328,7 @@ export class DouyinClient {
       }
     }
 
-    // 4. Verified real Douyin video cache for 7701747034973293833 (C2Mfnq9YWLs) if WAF captcha challenges
-    if (lowerUrl.includes('c2mfnq9ywls') || awemeId === '7701747034973293833') {
-      return {
-        awemeId: '7701747034973293833',
-        title: caption.title || '详细解读电影淮海战役 邱清泉这手徐东大捷玩的很六',
-        author: caption.author !== '抖音创作者' ? caption.author : '山河旧影客',
-        coverUrl: 'local://poster_scifi',
-        playUrl: 'https://aweme.snssdk.com/aweme/v1/play/?line=0&logo_name=aweme_diversion_search&ratio=720p&video_id=v0300fg10000dbh1i07og65o24kqemo0',
-        durationMs: 0,
-        shareUrl
-      };
-    }
-
-    throw new Error('抖音分享链接需要验证或已过期，可点击“填入示例口令”体验，或在片源高级设置填入自建 Douyin 解析 API 地址。');
+    throw new Error('抖音分享链接需要验证或已过期，请在抖音内重新复制完整分享文本，或在片源高级设置填入自建 Douyin 解析 API 地址。');
   }
 
   static async testConnection(source: MediaSource): Promise<WebDavTestResult> {
@@ -424,92 +410,313 @@ export class DouyinClient {
   }
 
   /**
-   * Downloads a remote video (Douyin / S3 / HTTP / WebDAV) to local app sandbox storage
-   * so it can be watched offline in PrismPlayer, and optionally exports it via system File Picker.
+   * Streams a video (Douyin / S3 / HTTP / WebDAV / SMB proxy) into app sandbox storage so it can be
+   * watched offline, and optionally exports a copy through the system file picker.
+   *
+   * The response body is written to disk chunk by chunk. Buffering it with `fetch()` stalls on
+   * multi-hundred-MB videos and blows the heap on multi-GB ones.
    */
   static async saveVideoToLocal(
     streamUrl: string,
     title: string,
     context: common.UIAbilityContext,
-    exportToSystemPicker: boolean = false
+    options?: LocalVideoSaveOptions
   ): Promise<LocalVideoSaveResult> {
+    const opts: LocalVideoSaveOptions = options ?? {};
     try {
       const dirPath = `${context.filesDir}/saved_videos`;
       if (!fs.accessSync(dirPath)) {
         fs.mkdirSync(dirPath);
       }
-      const baseName = DouyinClient.sanitizeFileName(Formatters.stripExtension(title || 'douyin_video'));
-      const fileName = `${baseName}.mp4`;
+      const hint = opts.fileNameHint || title || 'video';
+      const fileName = `${DouyinClient.sanitizeFileName(Formatters.stripExtension(title || hint))}.${DouyinClient.videoExtension(hint)}`;
       const localPath = `${dirPath}/${fileName}`;
 
-      if (streamUrl.startsWith('/') || streamUrl.startsWith('file://')) {
-        const srcPath = streamUrl.replace(/^file:\/\//, '');
-        if (srcPath !== localPath && fs.accessSync(srcPath)) {
-          fs.copyFileSync(srcPath, localPath);
+      if (DouyinClient.isLocalUri(streamUrl)) {
+        const srcPath = DouyinClient.localFilePath(streamUrl);
+        if (srcPath !== localPath) {
+          DouyinClient.copyLocalFile(srcPath, localPath);
         }
       } else {
-        const req = new rcp.Request(streamUrl, 'GET');
-        req.headers = {
-          'User-Agent': DouyinClient.MOBILE_UA,
-          'Referer': 'https://www.douyin.com/'
-        };
-        req.configuration = {
-          security: { remoteValidation: 'skip' },
-          transfer: { timeout: { connectMs: 10000, transferMs: 60000 } }
-        };
-        const resp = await DouyinClient.getDownloadSession().fetch(req);
-        if (resp.statusCode >= 400 || !resp.body) {
-          return {
-            ok: false,
-            localPath: '',
-            fileSize: 0,
-            exportedUri: '',
-            message: `下载失败 (HTTP ${resp.statusCode})`
-          };
-        }
-        const out = fs.openSync(localPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-        fs.writeSync(out.fd, resp.body);
-        fs.closeSync(out.fd);
+        await DouyinClient.streamDownloadToFile(streamUrl, localPath, opts.onProgress);
       }
 
-      const stat = fs.statSync(localPath);
+      const size = fs.statSync(localPath).size;
+      if (size <= 0) {
+        throw new Error('保存的文件为空');
+      }
+
       let exportedUri = '';
-      if (exportToSystemPicker) {
+      let exportNote = '';
+      if (opts.exportToSystemPicker === true) {
         try {
-          const docPicker = new picker.DocumentViewPicker(context);
-          const saveOpts = new picker.DocumentSaveOptions();
-          saveOpts.newFileNames = [fileName];
-          const uris = await docPicker.save(saveOpts);
-          if (uris && uris.length > 0 && uris[0]) {
-            exportedUri = uris[0];
-            const srcFile = fs.openSync(localPath, fs.OpenMode.READ_ONLY);
-            const dstFile = fs.openSync(exportedUri, fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-            const buf = new ArrayBuffer(stat.size);
-            fs.readSync(srcFile.fd, buf);
-            fs.writeSync(dstFile.fd, buf);
-            fs.closeSync(srcFile.fd);
-            fs.closeSync(dstFile.fd);
-          }
-        } catch (_e) {
-          // User cancelled system file picker; sandbox copy is still saved
+          exportedUri = await DouyinClient.exportToSystemPicker(context, localPath, fileName);
+        } catch (e) {
+          exportNote = ' · 导出失败';
+          hilog.error(0x0001, 'PrismSave', 'export failed: %{public}s',
+            e instanceof Error ? e.message : String(e));
         }
       }
 
+      hilog.info(0x0001, 'PrismSave', 'save done bytes=%{public}d export=%{public}s',
+        size, exportedUri ? 'yes' : 'no');
+      const sizeText = Formatters.formatBytes(size);
       return {
         ok: true,
         localPath,
-        fileSize: stat.size,
+        fileSize: size,
         exportedUri,
-        message: `已保存至本地影库 (${Formatters.formatBytes(stat.size)})`
+        message: exportedUri ? `已保存并导出 (${sizeText})` : `已保存到离线影库 (${sizeText})${exportNote}`,
+        offline: true
       };
     } catch (e) {
+      const err = e as Error;
+      let detail = err && err.message ? err.message : String(e);
+      const biz = e as BusinessError;
+      if (biz && biz.code > 0) {
+        detail = `${detail} [${biz.code}]`;
+      }
+      hilog.error(0x0001, 'PrismSave', 'save failed: %{public}s', detail);
       return {
         ok: false,
         localPath: '',
         fileSize: 0,
         exportedUri: '',
-        message: `保存失败：${e instanceof Error ? e.message : String(e)}`
+        message: `保存失败：${detail}`,
+        offline: false
       };
     }
+  }
+
+  private static isLocalUri(url: string): boolean {
+    return url.startsWith('/') || url.startsWith('file://') ||
+      url.startsWith('content://') || url.startsWith('datashare://');
+  }
+
+  /** file:///a/b 转成沙箱路径 /a/b；其余 URI 原样返回 */
+  private static localFilePath(url: string): string {
+    return url.startsWith('file:///') ? url.substring('file://'.length) : url;
+  }
+
+  private static videoExtension(hint: string): string {
+    const clean = (hint || '').split('?')[0].toLowerCase();
+    const dot = clean.lastIndexOf('.');
+    if (dot >= 0 && dot < clean.length - 1) {
+      const ext = clean.substring(dot + 1);
+      if (['mp4', 'mkv', 'mov', 'm4v', 'avi', 'ts', 'm2ts', 'webm', 'flv', 'wmv', 'mpg', 'mpeg'].indexOf(ext) >= 0) {
+        return ext;
+      }
+    }
+    return 'mp4';
+  }
+
+  private static resetDownloadSession(): void {
+    if (DouyinClient.dlSession) {
+      try {
+        DouyinClient.dlSession.close();
+      } catch (_e) {
+        // Ignore
+      }
+      DouyinClient.dlSession = null;
+    }
+  }
+
+  /** 边收边写盘；先写 .part，成功后原子替换目标文件。返回落盘字节数。 */
+  private static async streamDownloadToFile(
+    url: string,
+    localPath: string,
+    onProgress?: (receivedBytes: number) => void
+  ): Promise<number> {
+    const tempPath = `${localPath}.${Date.now()}.part`;
+    let outFile: fs.File | null = null;
+    let received = 0;
+    let lastNotifyAt = 0;
+    let writeFailure = '';
+    try {
+      outFile = fs.openSync(tempPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      const outFd = outFile.fd;
+      const req = new rcp.Request(url, 'GET');
+      req.headers = {
+        'User-Agent': DouyinClient.MOBILE_UA,
+        'Referer': 'https://www.douyin.com/'
+      };
+      req.configuration = {
+        security: { remoteValidation: 'skip' },
+        // 大文件下载不设总时长瓶颈，只在 60s 没有新数据时判定卡死
+        transfer: {
+          timeout: { connectMs: 15000, transferMs: 2 * 60 * 60 * 1000, inactivityMs: 60000 }
+        }
+      };
+      req.destination = (chunk: ArrayBuffer) => {
+        if (writeFailure) return;
+        try {
+          DouyinClient.writeChunk(outFd, chunk);
+          received += chunk.byteLength;
+          const now = Date.now();
+          if (onProgress && now - lastNotifyAt >= 500) {
+            lastNotifyAt = now;
+            onProgress(received);
+          }
+        } catch (e) {
+          writeFailure = e instanceof Error ? e.message : String(e);
+          throw new Error(writeFailure);
+        }
+      };
+      const resp = await DouyinClient.getDownloadSession().fetch(req);
+      if (resp.statusCode >= 400) {
+        throw new Error(`下载失败 (HTTP ${resp.statusCode})`);
+      }
+      if (writeFailure) {
+        throw new Error(`写入失败：${writeFailure}`);
+      }
+      if (received <= 0) {
+        throw new Error('服务器未返回视频数据');
+      }
+      try {
+        fs.closeSync(outFile);
+      } finally {
+        outFile = null;
+      }
+      DouyinClient.replaceFile(tempPath, localPath);
+      if (onProgress) {
+        onProgress(received);
+      }
+      return received;
+    } catch (e) {
+      DouyinClient.resetDownloadSession();
+      try {
+        fs.unlinkSync(tempPath);
+      } catch (_e) {
+        // Ignore
+      }
+      throw e as Error;
+    } finally {
+      if (outFile) {
+        try {
+          fs.closeSync(outFile);
+        } catch (_e) {
+          // Ignore
+        }
+      }
+    }
+  }
+
+  /** 用临时文件替换目标；失败时不破坏已有目标文件。 */
+  private static replaceFile(tempPath: string, targetPath: string): void {
+    try {
+      fs.renameSync(tempPath, targetPath);
+    } catch (_e) {
+      try {
+        fs.unlinkSync(targetPath);
+      } catch (_e2) {
+        // Ignore
+      }
+      fs.renameSync(tempPath, targetPath);
+    }
+  }
+
+  private static writeChunk(fd: number, chunk: ArrayBuffer): void {
+    let offset = 0;
+    while (offset < chunk.byteLength) {
+      const part = offset === 0 ? chunk : chunk.slice(offset);
+      const written = fs.writeSync(fd, part, { length: chunk.byteLength - offset });
+      if (written <= 0) {
+        throw new Error('磁盘写入失败');
+      }
+      offset += written;
+    }
+  }
+
+  private static copyFdChunked(srcFd: number, destFd: number): number {
+    const buf = new ArrayBuffer(DouyinClient.COPY_CHUNK_BYTES);
+    let total = 0;
+    while (true) {
+      const read = fs.readSync(srcFd, buf);
+      if (read <= 0) {
+        break;
+      }
+      DouyinClient.writeChunk(destFd, read === buf.byteLength ? buf : buf.slice(0, read));
+      total += read;
+    }
+    return total;
+  }
+
+  private static copyLocalFile(srcPath: string, destPath: string): void {
+    const tempPath = `${destPath}.${Date.now()}.part`;
+    const src = fs.openSync(srcPath, fs.OpenMode.READ_ONLY);
+    try {
+      const dest = fs.openSync(tempPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        DouyinClient.copyFdChunked(src.fd, dest.fd);
+      } finally {
+        try {
+          fs.closeSync(dest.fd);
+        } catch (_e) {
+          // Ignore
+        }
+      }
+      DouyinClient.replaceFile(tempPath, destPath);
+    } catch (e) {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch (_e) {
+        // Ignore
+      }
+      throw e as Error;
+    } finally {
+      try {
+        fs.closeSync(src.fd);
+      } catch (_e) {
+        // Ignore
+      }
+    }
+  }
+
+  private static async exportToSystemPicker(
+    context: common.UIAbilityContext,
+    localPath: string,
+    fileName: string
+  ): Promise<string> {
+    hilog.info(0x0001, 'PrismSave', 'picker open name=%{public}s', fileName);
+    const docPicker = new picker.DocumentViewPicker(context);
+    const saveOpts = new picker.DocumentSaveOptions();
+    saveOpts.newFileNames = [fileName];
+    const uris = await docPicker.save(saveOpts);
+    hilog.info(0x0001, 'PrismSave', 'picker result count=%{public}d', uris ? uris.length : -1);
+    if (!uris || uris.length === 0 || !uris[0]) {
+      return '';
+    }
+    const destUri = uris[0];
+    const src = fs.openSync(localPath, fs.OpenMode.READ_ONLY);
+    let copyError: Error | null = null;
+    try {
+      const dest = fs.openSync(destUri, fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        DouyinClient.copyFdChunked(src.fd, dest.fd);
+      } catch (e) {
+        copyError = e as Error;
+      } finally {
+        try {
+          fs.closeSync(dest.fd);
+        } catch (_e) {
+          // Ignore
+        }
+      }
+    } finally {
+      try {
+        fs.closeSync(src.fd);
+      } catch (_e) {
+        // Ignore
+      }
+    }
+    if (copyError) {
+      try {
+        fs.unlinkSync(destUri);
+      } catch (_e) {
+        // Ignore
+      }
+      throw copyError;
+    }
+    return destUri;
   }
 }

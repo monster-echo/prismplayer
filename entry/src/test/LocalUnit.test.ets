@@ -1,12 +1,13 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { AppConstants } from '../main/ets/common/Constants';
 import { Formatters } from '../main/ets/common/Formatters';
-import { MediaItem, MediaSource } from '../main/ets/common/Types';
+import { MediaItem, MediaSource, MediaSourceType } from '../main/ets/common/Types';
 import { DouyinClient } from '../main/ets/services/DouyinClient';
 import { EmbyClient, EmbySessionContext } from '../main/ets/services/EmbyClient';
 import { IptvClient } from '../main/ets/services/IptvClient';
 import { NfoParser } from '../main/ets/services/NfoParser';
 import { PlexClient } from '../main/ets/services/PlexClient';
+import { RemoteSourceClient } from '../main/ets/services/RemoteSourceClient';
 import { S3Client } from '../main/ets/services/S3Client';
 import { SmbClient } from '../main/ets/services/SmbClient';
 import { SubtitleEngine } from '../main/ets/services/SubtitleEngine';
@@ -37,6 +38,34 @@ export default function localUnitTest() {
     it('encodes_basic_auth_header', 0, () => {
       const hdr = Formatters.buildBasicAuthHeader('admin', 'pass123');
       expect(hdr).assertEqual('Basic YWRtaW46cGFzczEyMw==');
+    });
+
+    it('routes_only_remote_streams_through_range_proxy', 0, () => {
+      const makeSource = (type: MediaSourceType): MediaSource => {
+        return {
+          id: 's1',
+          name: 'test',
+          type: type,
+          baseUrl: 'smb://nas/share',
+          rootPath: '/',
+          username: 'u',
+          password: '',
+          allowInsecureTls: false,
+          cacheAlist302: false,
+          createdAt: 0,
+          lastScannedAt: 0
+        };
+      };
+
+      expect(RemoteSourceClient.needsRangeProxy('smb://nas/Movies/a.mkv')).assertTrue();
+      expect(RemoteSourceClient.needsRangeProxy('smb://nas/Movies/a.mkv', makeSource('smb'))).assertTrue();
+      expect(RemoteSourceClient.needsRangeProxy('https://dav.local/a.mkv', makeSource('webdav'))).assertTrue();
+      expect(RemoteSourceClient.needsRangeProxy('https://plex.local/a.mkv', makeSource('plex'))).assertFalse();
+      // 已离线保存：沙箱路径即使仍关联 SMB/WebDAV 片源也不能套代理
+      expect(RemoteSourceClient.needsRangeProxy(
+        '/data/storage/el2/base/haps/entry/files/saved_videos/a.mkv', makeSource('smb'))).assertFalse();
+      expect(RemoteSourceClient.needsRangeProxy(
+        'file:///data/storage/el2/base/haps/entry/files/saved_videos/a.mkv', makeSource('webdav'))).assertFalse();
     });
 
     it('parses_webdav_propfind_xml', 0, () => {
@@ -256,7 +285,7 @@ Dialogue: 0,0:02:20.53,0:02:22.66,Default,,0000,0000,0000,,{\\fn华文楷体\\fs
       const m3u = `#EXTM3U
 #EXTINF:-1 tvg-logo="https://img.example/cctv.png" group-title="央视新闻",CCTV-13 新闻
 https://live.example.com/cctv13/index.m3u8
-#EXTINF:-1 group-title="电影频道",4K 测试影院
+#EXTINF:-1 group-title="电影频道",4K 测试频道
 https://cdn.example.com/cinema.mp4`;
       const channels = IptvClient.parseM3uPlaylist(m3u);
       expect(channels.length).assertEqual(2);

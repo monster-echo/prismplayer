@@ -185,7 +185,7 @@ struct PrivacyVaultPage {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(`${entry.kind === 'series' ? '剧集' : entry.kind === 'movie' ? '电影' : '目录'} · ${this.getSourceName(entry.sourceId)}`)
           .fontSize(11)
-          .fontColor($r('app.color.text_muted'))
+          .fontColor($r('app.color.text_body_muted'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -266,7 +266,7 @@ struct PrivacyVaultPage {
                     if (this.store.vaultEntries.length === 0) {
                       Text('暂无隐藏内容')
                       .fontSize(12)
-                      .fontColor($r('app.color.text_muted'))
+                      .fontColor($r('app.color.text_body_muted'))
                     } else {
                       ForEach(this.store.vaultEntries, (entry: VaultEntry) => {
                         this.vaultEntryRow(entry)
@@ -275,7 +275,7 @@ struct PrivacyVaultPage {
 
                     Text('隐藏不会修改原文件。')
                     .fontSize(11)
-                    .fontColor($r('app.color.text_muted'))
+                    .fontColor($r('app.color.text_body_muted'))
                   }
                   .width('100%')
                   .alignItems(HorizontalAlign.Start)
@@ -284,7 +284,7 @@ struct PrivacyVaultPage {
               }
               .padding({ left: 18, right: 18, top: 14, bottom: 32 })
               .width('100%')
-            }
+            }.edgeEffect(EdgeEffect.Spring)
             .layoutWeight(1)
             .width('100%')
             .align(Alignment.TopStart)

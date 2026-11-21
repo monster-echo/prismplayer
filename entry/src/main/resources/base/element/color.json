@@ -54,7 +54,7 @@
     },
     {
       "name": "accent_cyan",
-      "value": "#64748B"
+      "value": "#5B6B85"
     },
     {
       "name": "accent_gold",
@@ -70,19 +70,19 @@
     },
     {
       "name": "text_muted",
-      "value": "#8B90A0"
+      "value": "#868B9B"
     },
     {
       "name": "success",
-      "value": "#059669"
+      "value": "#047857"
     },
     {
       "name": "warning",
-      "value": "#D97706"
+      "value": "#B45309"
     },
     {
       "name": "danger",
-      "value": "#DC2626"
+      "value": "#C81E1E"
     },
     {
       "name": "fill_subtle",
@@ -103,6 +103,10 @@
     {
       "name": "scrim_backdrop",
       "value": "#52000000"
+    },
+    {
+      "name": "text_body_muted",
+      "value": "#666E7C"
     }
   ]
 }

@@ -221,13 +221,6 @@ export class SubtitleSession {
   async loadSubtitleFromUrl(url: string): Promise<void> {
     if (!url) return;
     const item = this.mediaItem;
-    if (url.startsWith('builtin://')) {
-      const content = this.store.getBuiltInDemoSubtitle(url);
-      if (content) {
-        this.addExternalTrack(SubtitleEngine.parse(content, '内置演示特效字幕', url));
-      }
-      return;
-    }
     try {
       const content = await RemoteSourceClient.fetchText(url, this.mediaSource);
       if (this.mediaItem !== item) return;

@@ -52,12 +52,31 @@ export class RemoteSourceClient {
     return WebDavClient.fetchText(urlOrPath, source);
   }
 
+  /** 取二进制图片（海报等）：SMB 走原生字节读，其余走 WebDAV range 读。 */
+  static async fetchImageBytes(url: string, source?: MediaSource): Promise<ArrayBuffer> {
+    if (source && source.type === 'smb') {
+      return SmbClient.fetchBytes(url, source);
+    }
+    const res = await WebDavClient.fetchRangeChunkForNative(url, '', 0, 16 * 1024 * 1024 - 1, false);
+    return res.data;
+  }
+
   /**
    * Resolves dynamic/ephemeral stream URLs right before playback starts:
    * - S3: generates a fresh 12-hour AWS SigV4 Presigned GET URL for video and subtitles
    * - YouTube: resolves fresh direct MP4/HLS stream and auto-captions from videoId/mirror
    */
   static async resolvePlayableStream(item: MediaItem, source?: MediaSource): Promise<ResolvedPlayableStream> {
+    // 已离线保存的条目直接返回本地路径，不能再当作 S3/YouTube/抖音 远端地址解析
+    const url = item.streamUrl;
+    if (url.startsWith('/') || url.startsWith('file://') ||
+      url.startsWith('content://') || url.startsWith('datashare://')) {
+      return {
+        streamUrl: url,
+        subtitleUrl: item.subtitleUrl
+      };
+    }
+
     if (source && (source.type === 's3' || item.streamUrl.startsWith('s3://'))) {
       const signedVideo = S3Client.resolvePlayUrl(item.streamUrl, source);
       const signedSub = item.subtitleUrl ? S3Client.resolvePlayUrl(item.subtitleUrl, source) : '';
@@ -93,6 +112,19 @@ export class RemoteSourceClient {
       streamUrl: item.streamUrl,
       subtitleUrl: item.subtitleUrl
     };
+  }
+
+  /**
+   * 判断播放地址是否需要走本地 Range Proxy。
+   * 已离线保存的条目 streamUrl 是沙箱路径，即使仍挂着 SMB/WebDAV 片源也不能套代理，
+   * 否则 C++ 代理会把本地路径当远端打开，返回 502。
+   */
+  static needsRangeProxy(playUrl: string, source?: MediaSource): boolean {
+    const lower = (playUrl || '').toLowerCase();
+    const isHttp = lower.startsWith('http://') || lower.startsWith('https://');
+    return lower.startsWith('smb://') ||
+      (isHttp && source !== undefined &&
+        (source.type === 'webdav' || source.type === 'alist' || source.type === 'smb'));
   }
 
   static buildProxyConfig(streamUrl: string, source?: MediaSource): ProxyStreamConfig {

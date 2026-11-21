@@ -6,7 +6,7 @@ import { YouTubeClient, ResolvedYouTubeStream } from '../services/YouTubeClient'
 import { NavHeaderBar } from '../components/NavHeaderBar';
 import { PageShell } from '../components/PageShell';
 import { AppStore } from '../services/AppStore';
-import { MediaItem, PlayerLaunchParams } from '../common/Types';
+import { MediaItem, OnlineMediaParams, PlayerLaunchParams } from '../common/Types';
 
 /** 通用视频链接解析：粘贴链接或分享文本，尝试直接播放或提取页面视频地址。 */
 @Entry
@@ -22,6 +22,13 @@ struct OnlineMediaPage {
   private getLinkSession(): rcp.Session {
     if (!this.linkSession) this.linkSession = rcp.createSession();
     return this.linkSession;
+  }
+
+  aboutToAppear(): void {
+    const params = this.getUIContext().getRouter().getParams() as OnlineMediaParams | undefined;
+    if (params && params.clipboardUrl) {
+      this.inputText = params.clipboardUrl;
+    }
   }
 
   onBackPress(): boolean {
@@ -181,6 +188,11 @@ struct OnlineMediaPage {
     };
   }
 
+  /**
+   * 只有 PasteButton 安全控件能读剪贴板。
+   * ohos.permission.READ_PASTEBOARD 是 system_basic 级受限权限，普通应用申请不到，
+   * 直接调 pasteboard.getData() 会被系统拒（check permission failed）。
+   */
   private async pasteFromClipboard(): Promise<void> {
     try {
       const pasteData = await pasteboard.getSystemPasteboard().getData();
@@ -194,7 +206,7 @@ struct OnlineMediaPage {
       }
     } catch (_e) {
       this.statusOk = false;
-      this.statusText = '读取剪贴板失败，请手动粘贴';
+      this.statusText = '请长按输入框手动粘贴';
     }
   }
 
@@ -252,18 +264,25 @@ struct OnlineMediaPage {
                     .fontWeight(FontWeight.Bold)
                     .fontColor($r('app.color.text_primary'))
                     Blank()
-                    Button() {
-                      Text('粘贴')
-                      .fontSize(13)
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor($r('app.color.accent_blue'))
-                    }
+                    PasteButton({
+                      icon: PasteIconStyle.LINES,
+                      text: PasteDescription.PASTE,
+                      buttonType: ButtonType.Capsule
+                    })
                     .height(30)
                     .padding({ left: 12, right: 12 })
                     .backgroundColor($r('app.color.bg_secondary'))
+                    .fontColor($r('app.color.accent_blue'))
+                    .iconColor($r('app.color.accent_blue'))
                     .borderRadius(8)
-                    .border({ width: 0.8, color: $r('app.color.border_subtle') })
-                    .onClick(() => this.pasteFromClipboard())
+                    .onClick((event: ClickEvent, result: PasteButtonOnClickResult) => {
+                      if (result === PasteButtonOnClickResult.SUCCESS) {
+                        this.pasteFromClipboard();
+                      } else {
+                        this.statusOk = false;
+                        this.statusText = '粘贴未获授权，请长按输入框手动粘贴';
+                      }
+                    })
                   }
                   .width('100%')
 
@@ -273,7 +292,7 @@ struct OnlineMediaPage {
                   })
                   .fontSize(13)
                   .fontColor($r('app.color.text_primary'))
-                  .placeholderColor($r('app.color.text_muted'))
+                  .placeholderColor($r('app.color.text_body_muted'))
                   .placeholderFont({ size: 12 })
                   .height(88)
                   .width('100%')
@@ -319,7 +338,7 @@ struct OnlineMediaPage {
               }
               .padding({ left: 18, right: 18, top: 14, bottom: 32 })
               .width('100%')
-            }
+            }.edgeEffect(EdgeEffect.Spring)
             .layoutWeight(1)
             .backgroundColor($r('app.color.bg_primary'))
             .align(Alignment.TopStart)

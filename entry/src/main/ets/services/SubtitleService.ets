@@ -6,6 +6,7 @@ import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppConstants } from '../common/Constants';
 import { Formatters } from '../common/Formatters';
+import prismNative from 'libprismplayer.so';
 
 export interface OnlineSubtitleResult {
   id: string;
@@ -443,12 +444,14 @@ export class SubtitleService {
   static async downloadSubtitleText(url: string, cacheDir: string = '', preferred: string = ''): Promise<string> {
     const path = (url || '').toLowerCase().split('?')[0];
     if (path.endsWith('.rar')) {
-      throw new Error('RAR 压缩包暂不支持，请换一条结果');
+      const bin = await SubtitleService.fetchBinary(url);
+      return SubtitleService.extractSubtitleFromArchive(bin, cacheDir, preferred);
     }
     if (path.endsWith('.zip')) {
       hilog.info(0x0001, 'PrismSub', 'download zip %{public}s cache=%{public}s', path, cacheDir ? 'yes' : 'no');
       const bin = await SubtitleService.fetchBinary(url);
-      return SubtitleService.extractSubtitleFromZip(bin, cacheDir, preferred);
+      // 扩展名不可信：按文件头判定是 ZIP 还是 RAR
+      return SubtitleService.extractSubtitleFromArchive(bin, cacheDir, preferred);
     }
     if (url.startsWith('osdl://')) {
       const fileId = url.substring('osdl://download?file_id='.length);
@@ -553,21 +556,81 @@ export class SubtitleService {
     }
 
     const lower = direct.toLowerCase();
-    if (lower.endsWith('.rar')) {
-      throw new Error('该字幕为 RAR 压缩包暂不支持，请换一条结果');
-    }
-
     if (lower.endsWith('.srt') || lower.endsWith('.ass') || lower.endsWith('.ssa')) {
       const bin = await SubtitleService.fetchBinary(direct);
       return SubtitleService.decodeSubtitleBytes(bin, preferred);
     }
 
-    // ZIP 压缩包：落盘 → 解压 → 取第一条字幕文件
+    // 压缩包：落盘 → 解包（ZIP/RAR 由文件头判定）→ 取第一条字幕文件
     if (!cacheDir) {
       throw new Error('内部缓存目录不可用，无法解压字幕压缩包');
     }
     const bin = await SubtitleService.fetchBinary(direct);
+    return SubtitleService.extractSubtitleFromArchive(bin, cacheDir, preferred);
+  }
+
+  /**
+   * 压缩包落盘解包，取第一条字幕文件文本（优先 ASS 特效字幕）。
+   *
+   * 按**文件头**判断格式而非扩展名：字幕站常把 RAR 挂成 .zip，反之亦然。
+   * RAR 走 vendored UnRAR，ZIP 走系统 zlib。
+   */
+  private static extractSubtitleFromArchive(bin: ArrayBuffer, cacheDir: string, preferred: string = ''): Promise<string> {
+    const isRar = SubtitleService.looksLikeRar(bin);
+    const stamp = Date.now();
+    if (!cacheDir) {
+      return Promise.reject(new Error('内部缓存目录不可用，无法解压字幕压缩包'));
+    }
+    if (isRar) {
+      return SubtitleService.extractSubtitleFromRar(bin, cacheDir, preferred, stamp);
+    }
     return SubtitleService.extractSubtitleFromZip(bin, cacheDir, preferred);
+  }
+
+  /** RAR 魔数：RAR4 "Rar!\x1a\x07\x00" / RAR5 "Rar!\x1a\x07\x01\x00" */
+  private static looksLikeRar(bin: ArrayBuffer): boolean {
+    if (!bin || bin.byteLength < 7) return false;
+    const b = new Uint8Array(bin, 0, 7);
+    return b[0] === 0x52 && b[1] === 0x61 && b[2] === 0x72 && b[3] === 0x21
+      && b[4] === 0x1A && b[5] === 0x07;
+  }
+
+  private static async extractSubtitleFromRar(bin: ArrayBuffer, cacheDir: string, preferred: string, stamp: number): Promise<string> {
+    const rarPath = `${cacheDir}/sub_${stamp}.rar`;
+    const destDir = `${cacheDir}/sub_${stamp}_rar`;
+    const fh = fs.openSync(rarPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    fs.writeSync(fh.fd, bin);
+    fs.closeSync(fh.fd);
+    try {
+      fs.mkdirSync(destDir, true);
+      const res = await prismNative.rarExtractTo(rarPath, destDir);
+      if (!res.ok) {
+        hilog.error(0x0001, 'PrismSub', 'unrar failed: %{public}s', res.error);
+        throw new Error(`RAR 解压失败：${res.error || '未知原因'}`);
+      }
+      hilog.info(0x0001, 'PrismSub', 'unrar entries=%{public}d', res.names.length);
+      let picked = '';
+      for (const name of res.names) {
+        const n = name.toLowerCase();
+        if (n.endsWith('.srt') || n.endsWith('.ass') || n.endsWith('.ssa')) {
+          picked = name;
+          if (n.endsWith('.ass')) break;
+        }
+      }
+      if (!picked) {
+        throw new Error('压缩包内没有可用的字幕文件');
+      }
+      const rel = picked.replace(/\\/g, '/').replace(/^\/+/, '');
+      const subFile = fs.openSync(`${destDir}/${rel}`, fs.OpenMode.READ_ONLY);
+      const stat = fs.statSync(subFile.fd);
+      const buf = new ArrayBuffer(Math.min(stat.size, 8 * 1024 * 1024));
+      fs.readSync(subFile.fd, buf);
+      fs.closeSync(subFile.fd);
+      return SubtitleService.decodeSubtitleBytes(buf, preferred);
+    } finally {
+      try { fs.unlinkSync(rarPath); } catch (_e) { /* best effort */ }
+      try { fs.rmdirSync(destDir); } catch (_e) { /* best effort */ }
+    }
   }
 
   /** ZIP 压缩包落盘解压，取第一条字幕文件文本（优先 ASS 特效字幕）。 */

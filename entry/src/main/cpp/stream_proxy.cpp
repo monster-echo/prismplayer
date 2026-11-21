@@ -333,7 +333,10 @@ void StreamRangeProxy::HandleClient(int clientFd) {
 
     // Probe total size if unknown
     if (totalSize <= 0 || headOnly) {
-        UpstreamChunkResult probe = FetchUpstreamRange(streamId, config, 0, kBlockSize - 1, headOnly);
+        // 非 HEAD 时这份数据会作为 block 0 缓存，长度必须等于整块，
+        // 否则后续从块中途读会提前 break，导致 Content-Range 缺失。
+        const int64_t probeLen = headOnly ? kProbeSize : kBlockSize;
+        UpstreamChunkResult probe = FetchUpstreamRange(streamId, config, 0, probeLen - 1, headOnly);
         if (probe.statusCode == 0 || probe.statusCode >= 400) {
             SendStr(clientFd, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             return;
@@ -771,6 +774,7 @@ UpstreamChunkResult StreamRangeProxy::FetchViaSmb(
     if (endByte >= handle->fileSize) endByte = handle->fileSize - 1;
     uint32_t readLen = static_cast<uint32_t>(endByte - rangeStart + 1);
 
+    const int64_t readBeginMs = NowMs();
     std::string err;
     if (!handle->session->ReadFile(handle->fileId, rangeStart, readLen, out.data, err)) {
         // Reconnect once transparently on stale socket / SMB deadtime
@@ -782,6 +786,9 @@ UpstreamChunkResult StreamRangeProxy::FetchViaSmb(
     }
 
     out.statusCode = 206;
+    const int64_t costMs = NowMs() - readBeginMs;
+    OH_LOG_DEBUG(LOG_APP, "smb read %{public}u B in %{public}lld ms",
+                 static_cast<unsigned>(out.data.size()), static_cast<long long>(costMs));
     return out;
 }
 

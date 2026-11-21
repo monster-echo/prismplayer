@@ -43,7 +43,7 @@ export struct SourcesView {
   private confirmDeleteSource(src: MediaSource): void {
     this.getUIContext().showAlertDialog({
       title: `移除片源「${src.name}」`,
-      message: '将清除该片源从影库刮削的索引和观看记录，不会影响服务器上的原始视频文件。',
+      message: '会移除该片源在影库中的条目与观看记录，不影响服务器上的文件。',
       primaryButton: {
         value: '取消',
         action: () => {}
@@ -60,19 +60,12 @@ export struct SourcesView {
     Column() {
         // Sleek Single-Line Header + Unified Add Source Menu（固定 header）
         Row({ space: 10 }) {
-          Column({ space: 3 }) {
-            Text('片源管理')
-              .fontSize(26)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-            Text('本地 · WebDAV · SMB · Plex · 链接')
-              .fontSize(12)
-              .fontColor($r('app.color.text_muted'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
+          Text('片源管理')
+            .fontSize(26)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_primary'))
+            .layoutWeight(1)
+            .alignSelf(ItemAlign.Start)
 
           Button() {
             Row({ space: 5 }) {
@@ -91,13 +84,7 @@ export struct SourcesView {
           .borderRadius(10)
           .bindMenu([
             {
-              value: '粘贴视频链接（尝试播放）',
-              action: () => {
-                this.getUIContext().getRouter().pushUrl({ url: 'pages/OnlineMediaPage' });
-              }
-            },
-            {
-              value: '连接网络 / 云存储 / NAS',
+              value: '添加 NAS / 网盘',
               action: () => {
                 if (!this.store.canAddSource()) {
                   this.onRequestPro();
@@ -107,8 +94,18 @@ export struct SourcesView {
               }
             },
             {
-              value: '导入手机或本地视频',
+              value: '粘贴视频链接',
+              action: () => {
+                this.getUIContext().getRouter().pushUrl({ url: 'pages/OnlineMediaPage' });
+              }
+            },
+            {
+              value: '导入本机视频',
               action: () => { this.store.importLocalVideos(); }
+            },
+            {
+              value: '导入本机文件夹',
+              action: () => { this.store.importLocalFolder(); }
             }
           ], appMenuOptions())
         }
@@ -144,28 +141,20 @@ export struct SourcesView {
         }
 
         if (this.store.sources.length === 0) {
-          Column({ space: 16 }) {
-            Row({ space: 14 }) {
-              Image($r('app.media.ic_cloud_alist')).width(36).height(36)
-              Image($r('app.media.ic_nas_synology')).width(36).height(36)
-              Image($r('app.media.ic_nas_fnos')).width(36).height(36)
-              Image($r('app.media.ic_nas_qnap')).width(36).height(36)
-            }
-            Text('尚未连接私有云或网盘片源')
+          Column({ space: 14 }) {
+            Text('还没有片源')
               .fontSize(16)
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_primary'))
-            Text('支持群晖 Synology、飞牛 fnOS、威联通 QNAP、Alist / OpenList（阿里云盘 / 夸克 / 115）直连流播，不占用设备本地存储')
-              .fontSize(13)
-              .lineHeight(20)
-              .fontColor($r('app.color.text_muted'))
+            Text('群晖 · 飞牛 · 威联通 · Alist · Plex · Emby · SMB')
+              .fontSize(12)
+              .fontColor($r('app.color.text_body_muted'))
               .textAlign(TextAlign.Center)
-              .constraintSize({ maxWidth: 440 })
 
             Button() {
               Row({ space: 6 }) {
                 SymbolGlyph($r('sys.symbol.plus')).fontSize(14).fontColor([Color.White])
-                Text('立即连接 NAS / Alist').fontSize(13).fontWeight(FontWeight.Bold).fontColor(Color.White)
+                Text('连接 NAS / Alist').fontSize(13).fontWeight(FontWeight.Bold).fontColor(Color.White)
               }
             }
             .height(40)
@@ -218,13 +207,13 @@ export struct SourcesView {
                     }
                     Text(`${src.baseUrl}${src.rootPath && src.rootPath !== '/' ? src.rootPath : ''}`)
                       .fontSize(12)
-                      .fontColor($r('app.color.text_muted'))
+                      .fontColor($r('app.color.text_body_muted'))
                       .maxLines(1)
                       .textOverflow({ overflow: TextOverflow.Ellipsis })
                     Text(
                       this.probeStatusMap[src.id]
                         ? this.probeStatusMap[src.id]
-                        : `已入库 ${this.store.sourceItemCount(src.id)} 项 · ${src.lastScannedAt > 0 ? '已刮削同步' : '待扫描刮削'}`
+                        : `${this.store.sourceItemCount(src.id)} 项 · ${src.lastScannedAt > 0 ? '已同步' : '未扫描'}`
                     )
                       .fontSize(11)
                       .fontColor(
@@ -249,7 +238,7 @@ export struct SourcesView {
                   Button() {
                     Row({ space: 5 }) {
                       SymbolGlyph($r('sys.symbol.folder_fill')).fontSize(13).fontColor([Color.White])
-                      Text('浏览目录').fontSize(12).fontColor(Color.White)
+                      Text('浏览').fontSize(12).fontColor(Color.White)
                     }
                   }
                   .height(34)
@@ -261,7 +250,7 @@ export struct SourcesView {
                   Button() {
                     Row({ space: 5 }) {
                       SymbolGlyph($r('sys.symbol.arrow_clockwise')).fontSize(13).fontColor([$r('app.color.text_primary')])
-                      Text(this.store.isScanning ? '刮削中...' : '扫描刮削').fontSize(12).fontColor($r('app.color.text_primary'))
+                      Text(this.store.isScanning ? '扫描中...' : '扫描').fontSize(12).fontColor($r('app.color.text_primary'))
                     }
                   }
                   .height(34)
@@ -325,7 +314,7 @@ export struct SourcesView {
       })
       .width('100%')
       .constraintSize({ maxWidth: Layout.contentMax(this.breakpoint) + Layout.gutter(this.breakpoint) * 2 })
-    }
+    }.edgeEffect(EdgeEffect.Spring)
     .width('100%')
     .height('100%')
     .align(Alignment.Top)

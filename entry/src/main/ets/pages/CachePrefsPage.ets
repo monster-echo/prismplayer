@@ -195,7 +195,7 @@ struct CachePrefsPage {
                       .fill(this.store.proxyPort > 0 ? $r('app.color.success') : $r('app.color.text_muted'))
                       Text(this.store.proxyPort > 0 ? '运行中' : '待机')
                       .fontSize(12)
-                      .fontColor(this.store.proxyPort > 0 ? $r('app.color.success') : $r('app.color.text_muted'))
+                      .fontColor(this.store.proxyPort > 0 ? $r('app.color.success') : $r('app.color.text_body_muted'))
                     }
                   }
                   .width('100%')
@@ -218,7 +218,7 @@ struct CachePrefsPage {
               }
               .padding({ left: 18, right: 18, top: 14, bottom: 32 })
               .width('100%')
-            }
+            }.edgeEffect(EdgeEffect.Spring)
             .layoutWeight(1)
             .backgroundColor($r('app.color.bg_primary'))
             .align(Alignment.TopStart)

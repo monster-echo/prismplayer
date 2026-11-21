@@ -80,7 +80,7 @@ export struct PosterCard {
               Text(this.title.split(' (')[0])
                 .fontSize(13)
                 .fontWeight(FontWeight.Bold)
-                .fontColor($r('app.color.text_primary'))
+                .fontColor(Color.White)
                 .maxLines(2)
                 .textAlign(TextAlign.Center)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -104,7 +104,7 @@ export struct PosterCard {
           if (this.rating > 0) {
             Row({ space: 3 }) {
               SymbolGlyph($r('sys.symbol.star_fill'))
-                .fontSize(10)
+                .fontSize(12)
                 .fontColor([$r('app.color.accent_gold')])
               Text(this.rating.toFixed(1))
                 .fontSize(10)
@@ -188,7 +188,7 @@ export struct PosterCard {
         if (this.subtitle) {
           Text(this.subtitle)
             .fontSize(11)
-            .fontColor($r('app.color.text_muted'))
+            .fontColor($r('app.color.text_body_muted'))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }

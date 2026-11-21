@@ -501,6 +501,25 @@ export class MediaDatabase {
     await this.rdb.delete(pred);
   }
 
+  /** 批量删除媒体条目（清空离线影库时用）；分批避免 SQL 变量数上限 */
+  async deleteMediaItems(ids: string[]): Promise<void> {
+    if (!this.rdb || ids.length === 0) return;
+    for (let i = 0; i < ids.length; i += 500) {
+      const pred = new relationalStore.RdbPredicates('media_items');
+      pred.in('id', ids.slice(i, i + 500));
+      await this.rdb.delete(pred);
+    }
+  }
+
+  async deleteWatchHistoryItems(ids: string[]): Promise<void> {
+    if (!this.rdb || ids.length === 0) return;
+    for (let i = 0; i < ids.length; i += 500) {
+      const pred = new relationalStore.RdbPredicates('watch_history');
+      pred.in('item_id', ids.slice(i, i + 500));
+      await this.rdb.delete(pred);
+    }
+  }
+
   async clearWatchHistory(): Promise<void> {
     if (!this.rdb) return;
     const pred = new relationalStore.RdbPredicates('watch_history');

@@ -263,14 +263,19 @@ export class Formatters {
   }
 
   /**
-   * Pre-routes a MediaItem to 'native_hw' (OH_AVPlayer hardware decoding) or 'ffmpeg_sw' (@ohos/ijkplayer)
-   * using the `hardwareSupportedFormats` whitelist so unsupported containers/codecs (AVI, XviD, RMVB,
-   * MKV with DTS/TrueHD/AC3) open directly in FFmpeg without a mid-open fallback flicker.
+   * 解码引擎预路由：'native_hw'（OH_AVPlayer，走系统硬解）或 'ffmpeg_sw'（@ohos.ijkplayer，软解）。
+   *
+   * 判定按三条件递进，任一不满足就直连软解，避免打开后再闪一下切引擎：
+   *   1. 封装是否在 hardwareSupportedFormats 白名单（mp4/mkv/ts/mov/m3u8/webm…）
+   *   2. 是否命中系统不支持的内嵌音轨（DTS/TrueHD/AC3）或编码（XviD/DivX）
+   *   3. 设备是否真的具备该编码的硬解器（deviceHw 由 CodecCapability 提供）
    */
   static selectDecodeEngine(
     item: MediaItem,
     preferHardwareDecode: boolean,
-    hardwareSupportedFormats?: string[]
+    hardwareSupportedFormats?: string[],
+    codecMime?: string,
+    deviceHw?: (mime: string) => boolean
   ): DecodeRoutingDecision {
     if (!preferHardwareDecode) {
       return {
@@ -307,7 +312,7 @@ export class Formatters {
       return {
         engine: 'ffmpeg_sw',
         matchedFormat: 'dts',
-        reason: '检测到多声道影院音轨 (DTS/AC3/TrueHD)，直连 FFmpeg 软解'
+        reason: '检测到多声道音轨 (DTS/AC3/TrueHD)，直连 FFmpeg 软解'
       };
     }
 
@@ -319,7 +324,8 @@ export class Formatters {
       };
     }
 
-    if (!hasFmt('av1') && (rawTitle.includes('av1') || rawTitle.includes('vp9'))) {
+    if (!hasFmt('av1') && (rawTitle.includes('av1') || rawTitle.includes('vp9')) &&
+      !(deviceHw && codecMime && deviceHw(codecMime))) {
       return {
         engine: 'ffmpeg_sw',
         matchedFormat: 'av1',
@@ -341,10 +347,19 @@ export class Formatters {
     }
 
     if (hasFmt(ext)) {
+      // 条件 3：设备确实具备该编码的硬解器；没有就直连软解，别等 AVPlayer 打开后再报错切引擎
+      if (codecMime && deviceHw && !deviceHw(codecMime)) {
+        return {
+          engine: 'ffmpeg_sw',
+          matchedFormat: ext,
+          reason: `本机无 ${codecMime} 硬解器，直连 FFmpeg 软解`
+        };
+      }
+      const codecNote = codecMime ? ` / ${codecMime} 已确认硬解` : '';
       return {
         engine: 'native_hw',
         matchedFormat: ext,
-        reason: `格式 (${ext.toUpperCase()}) 命中 hardwareSupportedFormats 硬解白名单`
+        reason: `格式 (${ext.toUpperCase()}) 命中硬解白名单${codecNote}`
       };
     }
 

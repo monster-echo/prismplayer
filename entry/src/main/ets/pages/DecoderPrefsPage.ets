@@ -106,7 +106,7 @@ struct DecoderPrefsPage {
                     Text('开启后按下方列表硬解，关闭则全部软解')
                     .fontSize(12)
                     .lineHeight(17)
-                    .fontColor($r('app.color.text_muted'))
+                    .fontColor($r('app.color.text_body_muted'))
                   }.layoutWeight(1).alignItems(HorizontalAlign.Start)
 
                   Toggle({ type: ToggleType.Switch, isOn: this.preferHw })
@@ -131,7 +131,7 @@ struct DecoderPrefsPage {
                       .fontColor($r('app.color.text_primary'))
                       Text('开播前按列表选择引擎')
                       .fontSize(11)
-                      .fontColor($r('app.color.text_muted'))
+                      .fontColor($r('app.color.text_body_muted'))
                     }
                     .layoutWeight(1)
                     .alignItems(HorizontalAlign.Start)
@@ -160,7 +160,7 @@ struct DecoderPrefsPage {
                           }
                           Text(rule.desc)
                           .fontSize(11)
-                          .fontColor($r('app.color.text_muted'))
+                          .fontColor($r('app.color.text_body_muted'))
                           .maxLines(1)
                           .textOverflow({ overflow: TextOverflow.Ellipsis })
                         }
@@ -199,7 +199,7 @@ struct DecoderPrefsPage {
               }
               .padding({ left: 18, right: 18, top: 14, bottom: 32 })
               .width('100%')
-            }
+            }.edgeEffect(EdgeEffect.Spring)
             .layoutWeight(1)
             .backgroundColor($r('app.color.bg_primary'))
             .align(Alignment.TopStart)

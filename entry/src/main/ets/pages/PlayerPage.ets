@@ -2,6 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PiPWindow, window } from '@kit.ArkUI';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { image } from '@kit.ImageKit';
 import { KeyCode } from '@kit.InputKit';
 import {
   IjkMediaPlayer,
@@ -23,7 +24,8 @@ import {
   PlayerLaunchParams,
   PlayerTrackItem,
   SubtitleCue,
-  SubtitlePageRoute
+  SubtitlePageRoute,
+  DecodeRoutingDecision,
 } from '../common/Types';
 import { SubtitleOverlay } from '../components/SubtitleOverlay';
 import { SubtitleMaskBand } from '../components/SubtitleMaskBand';
@@ -38,6 +40,7 @@ import { computePictureRect, PictureRect } from '../common/VideoLayout';
 import { AppStore } from '../services/AppStore';
 import { AVSessionService } from '../services/AVSessionService';
 import { BurnSubDetector } from '../services/BurnSubDetector';
+import { CodecCapability } from '../services/CodecCapability';
 import { ContinuePermission } from '../services/ContinuePermission';
 import { PcSurfaceService } from '../services/PcSurfaceService';
 import { ContinuePayload } from '../services/PlaybackHandoff';
@@ -124,6 +127,22 @@ struct PlayerPage {
   @Local proxyBytesText: string = '0 MB';
   @Local proxyResolvedUrl: string = '';
   @Local decodeRouteReason: string = '';
+  /** 当前片源推断出的编码 mime，用于设备硬解能力查询与 OSD 展示 */
+  @Local activeCodecMime: string = '';
+
+  // ---- 网络评分：实测吞吐 / 内容码率 ----
+  /** 实测下行（Mbps），按 1 秒窗口平滑 */
+  @Local netMbps: number = 0;
+  /** 内容平均码率（Mbps），由文件大小与时长推算 */
+  @Local contentMbps: number = 0;
+  /** 评分 = 实测 / 码率；<1 表示供不上实时播放 */
+  @Local netScore: number = 0;
+  @Local netWarningShown: boolean = false;
+  private sampleBytes: number = 0;
+  private sampleAtMs: number = 0;
+  private lowScoreStreak: number = 0;
+  /** 滚动窗口 [时刻ms, 累计字节]，用于算 30s 平均吞吐 */
+  private netSamples: Array<[number, number]> = [];
   @Local videoSavedLocal: boolean = false;
   @Local savingVideo: boolean = false;
   @Local isFavorite: boolean = false;
@@ -179,13 +198,17 @@ struct PlayerPage {
       this.isFavorite = rawParams.item.isFavorite === true;
     }
     if (this.mediaItem) {
-      const route = Formatters.selectDecodeEngine(
+      const codecMime: string = CodecCapability.hintMime(this.mediaItem);
+      const route: DecodeRoutingDecision = Formatters.selectDecodeEngine(
         this.mediaItem,
         this.store.settings.preferHardwareDecode,
-        this.store.settings.hardwareSupportedFormats
+        this.store.settings.hardwareSupportedFormats,
+        codecMime,
+        (mime: string) => CodecCapability.supportsHardware(mime)
       );
       this.engineMode = route.engine;
       this.decodeRouteReason = route.reason;
+      this.activeCodecMime = codecMime;
     } else {
       this.engineMode = this.store.settings.preferHardwareDecode ? 'native_hw' : 'ffmpeg_sw';
     }
@@ -346,19 +369,35 @@ struct PlayerPage {
     } catch (_e) {
       // Ignore
     }
-    this.showBriefToast(this.isFullscreen ? '已切换横屏影院全屏' : '已退出全屏');
+    this.showBriefToast(this.isFullscreen ? '已切换横屏全屏' : '已退出全屏');
   }
 
   private async saveCurrentVideoOffline(exportToPicker: boolean): Promise<void> {
     if (!this.mediaItem || this.savingVideo) return;
     this.savingVideo = true;
-    this.showBriefToast('正在下载并保存视频至本地...');
-    const res = await this.store.saveMediaItemOffline(this.mediaItem, this.mediaSource, exportToPicker);
-    this.savingVideo = false;
-    if (res.ok) {
-      this.videoSavedLocal = true;
+    const expectedBytes = this.mediaItem.fileSize;
+    hilog.info(0x0001, 'PrismPlay', 'save offline start export=%{public}s bytes=%{public}d',
+      exportToPicker ? 'yes' : 'no', expectedBytes);
+    this.toastText = exportToPicker ? '正在另存视频...' : '正在下载并保存视频至本地...';
+    try {
+      const res = await this.store.saveMediaItemOffline(this.mediaItem, this.mediaSource, exportToPicker,
+        (received: number) => {
+          if (expectedBytes > 0) {
+            const pct = Math.min(99, Math.floor(received * 100 / expectedBytes));
+            this.toastText = `保存中 ${pct}%`;
+          } else {
+            this.toastText = `保存中 ${Formatters.formatBytes(received)}`;
+          }
+        });
+      if (res.ok && res.offline) {
+        this.videoSavedLocal = true;
+      }
+      this.showBriefToast(res.message);
+    } catch (e) {
+      this.showBriefToast(`保存失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.savingVideo = false;
     }
-    this.showBriefToast(res.message);
   }
 
   private showBriefToast(msg: string): void {
@@ -628,7 +667,6 @@ struct PlayerPage {
     const ijk = new IjkMediaPlayer('ijk_video_surface');
     ijk.setContext(this.ijkContext, 'ijk_video_surface');
     ijk.native_setup();
-    ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, 'mediacodec', '0');
     ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, 'opensles', '0');
     ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, 'start-on-prepared', '1');
     ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, 'fastseek', '1');
@@ -645,7 +683,8 @@ struct PlayerPage {
     }
     ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, 'timeout', '10000000');
 
-    ijk.setDataSource(resolved.url);
+    // 离线影库保存的是沙箱绝对路径；FFmpeg 只认 file:// URI，直接传路径会报 -10000
+    ijk.setDataSource(resolved.url.startsWith('/') ? `file://${resolved.url}` : resolved.url);
 
     const onPrepared: OnPreparedListener = {
       onPrepared: () => {
@@ -838,12 +877,16 @@ struct PlayerPage {
         this.isPlaying = true;
       }
     } else if (this.engineMode === 'ffmpeg_sw' && this.ijkPlayer) {
-      if (this.isPlaying) {
-        this.ijkPlayer.pause();
-        this.isPlaying = false;
-      } else {
-        this.ijkPlayer.start();
-        this.isPlaying = true;
+      try {
+        if (this.isPlaying) {
+          this.ijkPlayer.pause();
+          this.isPlaying = false;
+        } else {
+          this.ijkPlayer.start();
+          this.isPlaying = true;
+        }
+      } catch (e) {
+        hilog.error(0x0001, 'PrismPip', 'ijk toggle failed: %{public}s', JSON.stringify(e));
       }
     }
     this.wakeControls();
@@ -915,6 +958,7 @@ struct PlayerPage {
           this.proxyHitRate = `${pct}% (${st.cacheHits}/${totalReq})`;
           this.proxyBytesText = Formatters.formatBytes(st.bytesServed);
           this.proxyResolvedUrl = st.resolvedUrl;
+          this.updateNetworkScore(st.bytesServed, st.totalSize);
         } catch (_e) {
           // Ignore
         }
@@ -926,6 +970,60 @@ struct PlayerPage {
     if (this.tickTimer >= 0) {
       clearInterval(this.tickTimer);
       this.tickTimer = -1;
+    }
+  }
+
+  /**
+   * 网络评分 = 实测下行 / 内容平均码率。
+   *
+   * 采样口径：代理累计 bytesServed 的 1 秒增量，做 0.6/0.4 指数平滑。
+   * 播放器被喂饱时该值≈码率（1.0 上下），被饿住时才会掉到 1 以下，
+   * 因此 <1 持续 3 秒即判定为「供不上实时播放」，给用户一次性提示。
+   */
+  private updateNetworkScore(bytes: number, totalSize: number): void {
+    const now = Date.now();
+    if (this.sampleAtMs === 0 || bytes < this.sampleBytes) {
+      this.sampleBytes = bytes;
+      this.sampleAtMs = now;
+      this.netSamples = [[now, bytes]];
+      return;
+    }
+    const dt = now - this.sampleAtMs;
+    if (dt < 1000) return;
+    this.sampleBytes = bytes;
+    this.sampleAtMs = now;
+
+    // 滚动保留 30 秒。缓冲满时播放器会暂停读取，瞬时吞吐会掉到码率以下，
+    // 但那并不代表网络差；只有在整段时间内平均供给跟不上，才是真的供不上。
+    this.netSamples.push([now, bytes]);
+    const cutoff = now - 30000;
+    while (this.netSamples.length > 2 && this.netSamples[0][0] < cutoff) {
+      this.netSamples.shift();
+    }
+
+    const first = this.netSamples[0];
+    const span = now - first[0];
+    if (span < 5000) return;
+    const mbps = ((bytes - first[1]) * 8) / span / 1000;
+
+    this.netMbps = this.netMbps === 0 ? mbps : this.netMbps * 0.5 + mbps * 0.5;
+
+    if (totalSize > 0 && this.durationMs > 0) {
+      this.contentMbps = (totalSize * 8) / (this.durationMs / 1000) / 1000000;
+    }
+    if (this.contentMbps <= 0) return;
+
+    this.netScore = this.netMbps / this.contentMbps;
+    if (this.isPlaying && this.netScore < 0.95) {
+      this.lowScoreStreak++;
+      if (this.lowScoreStreak >= 3 && !this.netWarningShown) {
+        this.netWarningShown = true;
+        this.showBriefToast(
+          `网络 ${this.netMbps.toFixed(1)} Mbps，此片需 ${this.contentMbps.toFixed(1)} Mbps`
+        );
+      }
+    } else {
+      this.lowScoreStreak = 0;
     }
   }
 
@@ -996,8 +1094,43 @@ struct PlayerPage {
   private async shareCurrentItem(): Promise<void> {
     if (!this.mediaItem) return;
     const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    const ok: boolean = await ShareService.shareMediaItem(ctx, this.mediaItem, this.positionMs);
-    if (!ok) this.showBriefToast('分享面板不可用');
+    const thumbnail: string = await this.captureFrameThumbnail(ctx);
+    const shared: boolean = await ShareService.shareMediaItem(ctx, this.mediaItem, this.positionMs, thumbnail);
+    if (shared) return;
+    // 没有可用的分享面板时不能让这次点击落空：链接进剪贴板，用户能粘贴出去。
+    const copied: boolean = ShareService.copyShareUrl(this.mediaItem, this.positionMs);
+    this.showBriefToast(copied ? '链接已复制，可粘贴分享' : '分享面板不可用');
+  }
+
+  /**
+   * 分享卡缩略图 = 当前画面帧。
+   *
+   * 直接读 XComponent 的 surface（官方给视频场景的取帧口径），硬解 / FFmpeg 两条链路都适用，
+   * 不受片源是本地还是 WebDAV / SMB 流影响；取不到就返回空串，分享继续但没有缩略图。
+   */
+  private async captureFrameThumbnail(ctx: common.UIAbilityContext): Promise<string> {
+    try {
+      const controller: XComponentController =
+        this.engineMode === 'native_hw' ? this.nativeController : this.ijkController;
+      const surfaceId: string = controller.getXComponentSurfaceId();
+      if (!surfaceId) return '';
+      const rect: SurfaceRect = controller.getXComponentSurfaceRect();
+      let frame: image.PixelMap;
+      if (rect.surfaceWidth > 0 && rect.surfaceHeight > 0) {
+        const region: image.Region = {
+          x: rect.offsetX ?? 0,
+          y: rect.offsetY ?? 0,
+          size: { width: rect.surfaceWidth, height: rect.surfaceHeight }
+        };
+        frame = await image.createPixelMapFromSurface(surfaceId, region);
+      } else {
+        frame = await image.createPixelMapFromSurface(surfaceId);
+      }
+      return await ShareService.saveFrameThumbnail(ctx, frame);
+    } catch (e) {
+      hilog.warn(0x0001, 'PrismShare', 'capture frame failed: %{public}s', JSON.stringify(e));
+      return '';
+    }
   }
 
   /** 画中画：系统 VIDEO_PLAY 模板直接复用当前 XComponent 的 Surface。 */
@@ -1029,6 +1162,7 @@ struct PlayerPage {
         }
       });
       controller.on('controlPanelActionEvent', (event: PiPWindow.PiPActionEventType, _status?: number) => {
+        hilog.info(0x0001, 'PrismPip', 'control event=%{public}s', `${event}`);
         if (event === 'playbackStateChanged') {
           this.togglePlayPause();
           if (this.pipController) {
@@ -1488,7 +1622,7 @@ struct PlayerPage {
           }
         }
         .width('100%')
-      }
+      }.edgeEffect(EdgeEffect.Spring)
       .layoutWeight(1)
       .width('100%')
       .align(Alignment.TopStart)
@@ -1612,7 +1746,7 @@ struct PlayerPage {
       }
 
       // ASS / SRT / VTT Synchronized Subtitle Overlay
-      if (this.subtitle.enabled) {
+      if (this.subtitle.enabled && !this.pipActive) {
         SubtitleOverlay({
           cues: this.activeCues,
           bottomInsetVp: this.subtitleBottomInset(),
@@ -1876,6 +2010,10 @@ struct PlayerPage {
             Text(`路由决策：${this.decodeRouteReason}`)
               .fontSize(10).fontColor('#D97706').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }
+          if (this.activeCodecMime) {
+            Text(`解码器：${CodecCapability.decoderName(this.activeCodecMime) || this.activeCodecMime}（${this.activeCodecMime}）`)
+              .fontSize(10).fontColor('#94A3B8').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
           Text(`分辨率：${this.videoWidth} × ${this.videoHeight} · 倍速：${this.playbackRate}x`)
             .fontSize(11).fontColor(Color.White)
           Text(`C++ Range Proxy：127.0.0.1:${this.store.proxyPort} · 已吞吐 ${this.proxyBytesText}`)
@@ -1885,6 +2023,13 @@ struct PlayerPage {
           if (this.proxyResolvedUrl) {
             Text(`直链：${this.proxyResolvedUrl}`)
               .fontSize(10).fontColor('#6B7280').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          if (this.contentMbps > 0) {
+            Text(`网络 ${this.netMbps.toFixed(1)} Mbps ／ 码率 ${this.contentMbps.toFixed(1)} Mbps ／ 评分 ${(this.netScore * 100).toFixed(0)}%`)
+              .fontSize(11)
+              .fontColor(this.netScore >= 1.5 ? '#10B981' : (this.netScore >= 0.95 ? '#F59E0B' : '#EF4444'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
           }
         }
         .width(340)
@@ -1896,8 +2041,8 @@ struct PlayerPage {
         .position({ left: 18, top: 108 })
       }
 
-      // Player Controls Overlay
-      if (this.showControls) {
+      // Player Controls Overlay（画中画期间由系统面板接管，主窗口不再绘制）
+      if (this.showControls && !this.pipActive) {
         Column() {
           // Top Bar
           Row({ space: 10 }) {
@@ -1997,7 +2142,7 @@ struct PlayerPage {
                   action: () => { this.showStatsOsd = !this.showStatsOsd; }
                 },
                 {
-                  value: this.isFullscreen ? '退出全屏影院模式' : '切换全屏影院模式',
+                  value: this.isFullscreen ? '退出全屏' : '切换全屏',
                   action: () => { this.toggleFullscreen(); }
                 }
               ], playerMenuOptions())

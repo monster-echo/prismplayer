@@ -1,6 +1,7 @@
 #include "player_engine.h"
 #include "xcomponent_bridge.h"
 #include <dlfcn.h>
+#include <vector>
 #include <hilog/log.h>
 #include <multimedia/player_framework/native_avcodec_base.h>
 #include <multimedia/player_framework/native_avformat.h>
@@ -29,6 +30,34 @@ FnGetTrackDesc ResolveGetTrackDesc() {
     static FnGetTrackDesc fn = reinterpret_cast<FnGetTrackDesc>(dlsym(RTLD_DEFAULT, "OH_AVPlayer_GetTrackDescription"));
     return fn;
 }
+
+// 缓冲策略是 API 23 才有的能力：低版本设备没有这些符号，直接链接会导致 .so 加载失败，
+// 因此运行时 dlsym 探测，缺失则静默跳过（行为等同旧版）。
+// 实测 SMB 单次读抖动在 0.2~1.9 秒之间，加深缓冲是吸收这种抖动最直接的手段。
+void ApplyBufferStrategy(OH_AVPlayer* p) {
+    using FnCreate = OH_AVPlaybackStrategy* (*)();
+    using FnSetMs = OH_AVErrCode (*)(OH_AVPlaybackStrategy*, int32_t);
+    using FnApply = OH_AVErrCode (*)(OH_AVPlayer*, OH_AVPlaybackStrategy*);
+
+    auto create = reinterpret_cast<FnCreate>(dlsym(RTLD_DEFAULT, "OH_AVPlaybackStrategy_Create"));
+    auto setBuf = reinterpret_cast<FnSetMs>(dlsym(RTLD_DEFAULT, "OH_AVPlaybackStrategy_SetPreferredBufferDuration"));
+    auto setStart = reinterpret_cast<FnSetMs>(dlsym(RTLD_DEFAULT, "OH_AVPlaybackStrategy_SetPreferredBufferDurationForPlaying"));
+    auto apply = reinterpret_cast<FnApply>(dlsym(RTLD_DEFAULT, "OH_AVPlayer_SetPlaybackStrategy"));
+    if (!create || !setBuf || !apply) {
+        OH_LOG_INFO(LOG_APP, "buffer strategy unsupported on this API level, skipped");
+        return;
+    }
+
+    OH_AVPlaybackStrategy* st = create();
+    if (!st) return;
+    setBuf(st, 15000);                                  // 目标缓冲 15s
+    if (setStart) setStart(st, 2000);                    // 攒够 2s 起播，避免开场久等
+    int32_t rc = apply(p, st);
+    OH_LOG_INFO(LOG_APP, "buffer strategy applied rc=%{public}d", rc);
+    // 不销毁：文档未明确 player 是否持有该指针，宁可有界保留也不冒悬空风险
+    static std::vector<OH_AVPlaybackStrategy*> kept;
+    kept.push_back(st);
+}
 } // namespace
 
 NativePlayerEngine::NativePlayerEngine(int32_t id) : id_(id) {
@@ -38,6 +67,7 @@ NativePlayerEngine::NativePlayerEngine(int32_t id) : id_(id) {
         OH_AVPlayer_SetOnErrorCallback(player_, &NativePlayerEngine::OnPlayerError, this);
         OH_AVPlayer_SetAudioRendererInfo(player_, AUDIOSTREAM_USAGE_MOVIE);
         OH_AVPlayer_SetAudioInterruptMode(player_, AUDIOSTREAM_INTERRUPT_MODE_SHARE);
+        ApplyBufferStrategy(player_);
     }
 }
 

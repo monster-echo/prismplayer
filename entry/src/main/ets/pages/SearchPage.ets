@@ -100,7 +100,7 @@ struct SearchPage {
                 .height(38)
                 .fontSize(14)
                 .fontColor($r('app.color.text_primary'))
-                .placeholderColor($r('app.color.text_muted'))
+                .placeholderColor($r('app.color.text_body_muted'))
                 .backgroundColor(Color.Transparent)
                 .padding({ left: 0, right: 0 })
                 .defaultFocus(true)
@@ -131,7 +131,7 @@ struct SearchPage {
               this.chip('正在观看', 'watching')
             }
             .padding({ left: 18, right: 18 })
-          }
+          }.edgeEffect(EdgeEffect.Spring)
           .scrollable(ScrollDirection.Horizontal)
           .align(Alignment.TopStart)
           .scrollBar(BarState.Off)
@@ -139,7 +139,7 @@ struct SearchPage {
 
           Text(`匹配 ${this.getResults().length} 项`)
             .fontSize(12)
-            .fontColor($r('app.color.text_muted'))
+            .fontColor($r('app.color.text_body_muted'))
             .padding({ left: 20, right: 20 })
             .width('100%')
 
@@ -154,7 +154,7 @@ struct SearchPage {
                 .fontColor($r('app.color.text_primary'))
               Text('尝试更换关键词或清除筛选条件')
                 .fontSize(12)
-                .fontColor($r('app.color.text_muted'))
+                .fontColor($r('app.color.text_body_muted'))
             }
             .width('100%')
             .padding({ top: 72 })
@@ -196,7 +196,7 @@ struct SearchPage {
 
                       Text(item.fileName)
                         .fontSize(11)
-                        .fontColor($r('app.color.text_muted'))
+                        .fontColor($r('app.color.text_body_muted'))
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
 
@@ -219,7 +219,7 @@ struct SearchPage {
                         if (item.fileSize > 0) {
                           Text(Formatters.formatBytes(item.fileSize))
                             .fontSize(11)
-                            .fontColor($r('app.color.text_muted'))
+                            .fontColor($r('app.color.text_body_muted'))
                         }
                       }
                     }

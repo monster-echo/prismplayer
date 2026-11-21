@@ -62,8 +62,8 @@ export class MediaArtwork {
     return src.type.toUpperCase();
   }
 
-  static presetIcon(label: string): Resource {
-    const lower = label.toLowerCase();
+  static presetIcon(label: string, tag: string = ''): Resource {
+    const lower = `${label} ${tag}`.toLowerCase();
     if (lower.includes('s3') || lower.includes('r2') || lower.includes('minio') || lower.includes('oss')) {
       return $r('app.media.ic_protocol_s3');
     }

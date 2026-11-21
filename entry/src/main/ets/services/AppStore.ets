@@ -13,6 +13,7 @@ import {
   PlayerLaunchParams,
   ProTier,
   RemoteFileEntry,
+  RouteRequest,
   SeriesGroup,
   SubtitleStyleValues,
   SubtitleTrackOption,
@@ -22,6 +23,11 @@ import {
   WatchHistoryRecord
 } from '../common/Types';
 import { CardData, CardSnapshot, CARD_SNAPSHOT_KEY } from './CardSnapshot';
+import { CardFormData } from './CardFormData';
+import { CardPoster } from './CardPoster';
+import { LocalArtwork } from './LocalArtwork';
+import { LocalAccess } from './LocalAccess';
+import { LocalStorageUsage } from './LocalStorageUsage';
 import { ContinuePayload } from './PlaybackHandoff';
 import { CryptoVault } from './CryptoVault';
 import { DouyinClient, LocalVideoSaveResult } from './DouyinClient';
@@ -86,8 +92,10 @@ export class AppStore {
   /** 卡片 / 快捷方式 / 分享链接 / 系统菜单唤起播放时，等待 UI 侧接手的请求。 */
   @Trace pendingPlayerLaunch: PlayerLaunchParams | null = null;
   @Trace pendingTab: number = -1;
+  @Trace pendingRoute: RouteRequest | null = null;
   private launchHandler: ((params: PlayerLaunchParams) => void) | null = null;
   private tabHandler: ((index: number) => void) | null = null;
+  private routeHandler: ((req: RouteRequest) => void) | null = null;
   /** 当前播放现场，供 UIAbility.onContinue 读取后跨端迁移。 */
   private livePlayback: ContinuePayload | null = null;
   @Trace currentBreakpoint: BreakpointType = 'sm';
@@ -141,9 +149,22 @@ export class AppStore {
   private async bootstrapAfterConsent(): Promise<void> {
     this.ensureNativeProxy();
     await this.reloadAllData();
-    if (this.mediaItems.length === 0 && this.sources.length === 0) {
-      await this.seedOpenShowcaseLibrary();
-    }
+    // 本机视频的持久授权必须每次启动重新激活，否则条目全部打不开
+    this.activateLocalPermissions().catch(() => {});
+    await this.purgeLegacyDemoLibrary();
+  }
+
+  /**
+   * 旧版本首次启动会写入 3 部演示片（source_id = demo_showcase）。应用市场要求正式版本
+   * 不得内置测试数据，这里在升级安装时清掉遗留条目与其观看历史；没有残留直接返回。
+   */
+  private async purgeLegacyDemoLibrary(): Promise<void> {
+    const hasDemo = this.mediaItems.some((m: MediaItem) => m.sourceId === 'demo_showcase');
+    if (!hasDemo) return;
+    await this.db.deleteSource('demo_showcase');
+    this.mediaItems = await this.db.listMediaItems();
+    this.watchHistory = await this.db.listWatchHistory();
+    await this.refreshCardSnapshot();
   }
 
   ensureNativeProxy(): number {
@@ -199,6 +220,25 @@ export class AppStore {
     if (pending) {
       this.pendingPlayerLaunch = null;
       handler(pending);
+    }
+  }
+
+  /** 通用页面跳转：分享扩展之类的外部来源只需要说「去哪个页面、带什么参数」。 */
+  registerRouteHandler(handler: (req: RouteRequest) => void): void {
+    this.routeHandler = handler;
+    const pending = this.pendingRoute;
+    if (pending) {
+      this.pendingRoute = null;
+      handler(pending);
+    }
+  }
+
+  requestRoute(url: string, params: Object): void {
+    const req: RouteRequest = { url, params };
+    if (this.routeHandler) {
+      this.routeHandler(req);
+    } else {
+      this.pendingRoute = req;
     }
   }
 
@@ -282,7 +322,25 @@ export class AppStore {
   /** 把「继续观看」算好写进 preferences，卡片进程只读这一份。 */
   async refreshCardSnapshot(): Promise<void> {
     const data: CardData = CardSnapshot.build(this.watchHistory, this.concealedIds());
+    // 先落文字版本：这条路径在启动/每次进度保存时都会跑，不能被网络图拖住
     await this.db.setStringPref(CARD_SNAPSHOT_KEY, CardSnapshot.toJson(data));
+    if (!data.hasData) return;
+    this.hydrateCardPoster(data).catch(() => {});
+  }
+
+  /** 海报是加分项：download 失败或超时就保持纯文字卡片。 */
+  private async hydrateCardPoster(data: CardData): Promise<void> {
+    if (!this.context) return;
+    if (CardPoster.isUsable(data.posterUrl)) {
+      const path: string = await CardPoster.ensure(this.context, data.posterUrl);
+      if (path) {
+        data.posterPath = path;
+        data.hasPoster = true;
+        await this.db.setStringPref(CARD_SNAPSHOT_KEY, CardSnapshot.toJson(data));
+      }
+    }
+    // 桌面已添加卡片时立刻推送，不必等用户重新添加或系统定时刷新
+    await CardFormData.push(this.context, data);
   }
 
   async getNumberPref(key: string, def: number): Promise<number> {
@@ -820,6 +878,17 @@ export class AppStore {
         addedAt: Date.now()
       };
 
+      // 同目录图片封面（Kodi/Emby 风格）：NAS 影库普遍这么放，优先于 TMDB
+      if (!item.posterUrl && this.context) {
+        const thumbHint = (fileNfo && fileNfo.thumbRaw) ? fileNfo.thumbRaw
+          : ((seriesNfo && seriesNfo.thumbRaw) ? seriesNfo.thumbRaw : '');
+        const art = LocalArtwork.pick(entries, e.name, thumbHint);
+        if (art) {
+          const local = await LocalArtwork.materialize(this.context, source, art);
+          if (local) item.posterUrl = local;
+        }
+      }
+
       if (this.settings.tmdbApiKey && !item.posterUrl) {
         item = await TmdbScraper.enrichItem(item, this.settings);
       }
@@ -831,71 +900,156 @@ export class AppStore {
     if (!this.context) return [];
     const docPicker = new picker.DocumentViewPicker(this.context);
     const opts = new picker.DocumentSelectOptions();
-    opts.maxSelectNumber = 10;
+    opts.maxSelectNumber = 50;
+    opts.fileSuffixFilters = ['视频|.mp4,.mkv,.mov,.m4v,.webm,.ts,.avi,.flv'];
     const uris = await docPicker.select(opts);
     if (!uris || uris.length === 0) return [];
 
     const imported: MediaItem[] = [];
+    const granted: string[] = [];
     for (let i = 0; i < uris.length; i++) {
       const uri = uris[i];
       const decoded = decodeURIComponent(uri);
       const slash = decoded.lastIndexOf('/');
       const fileName = slash >= 0 ? decoded.substring(slash + 1) : `local_${i}.mp4`;
       if (!Formatters.isVideoFile(fileName)) continue;
-
-      let durationMs = 0;
-      let fileSize = 0;
-      let width = 0;
-      let height = 0;
-      try {
-        const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
-        const stat = fs.statSync(file.fd);
-        fileSize = stat.size;
-        const meta = prismNative.probeLocalMedia(file.fd, 0, stat.size);
-        durationMs = meta.durationMs;
-        width = meta.width;
-        height = meta.height;
-        fs.closeSync(file.fd);
-      } catch (_e) {
-        // Non-fatal
-      }
-
-      const parsed = Formatters.parseMediaFilename(fileName);
-      const qTag = height >= 2160 ? '4K' : (height >= 1080 ? '1080P' : parsed.qualityTag);
-      const item: MediaItem = {
-        id: `local_${uri}`,
-        sourceId: 'local_device',
-        sourceType: 'local',
-        remotePath: uri,
-        streamUrl: uri,
-        fileName,
-        fileSize,
-        mediaType: parsed.mediaType,
-        seriesKey: `local_${parsed.cleanTitle.toLowerCase()}`,
-        seriesTitle: parsed.cleanTitle,
-        seasonNo: parsed.seasonNo,
-        episodeNo: parsed.episodeNo,
-        title: parsed.cleanTitle,
-        originalTitle: '',
-        year: parsed.year,
-        overview: width > 0 ? `本地视频文件 · ${width}×${height}` : '本地设备导入视频',
-        posterUrl: '',
-        backdropUrl: '',
-        rating: 0,
-        qualityTag: qTag,
-        tmdbId: 0,
-        durationMs,
-        subtitleUrl: '',
-        addedAt: Date.now()
-      };
+      const item = await this.buildLocalItem(uri, fileName);
+      if (!item) continue;
       imported.push(item);
+      granted.push(uri);
     }
 
-    if (imported.length > 0) {
-      await this.db.upsertMediaItems(imported);
-      await this.reloadAllData();
-    }
+    // 先把授权固化，再入库：顺序反了的话，重启后就是一堆打不开的条目
+    await LocalAccess.persist(granted);
+    await this.commitLocalItems(imported);
     return imported;
+  }
+
+  /** 选一个文件夹，把里面（含子目录）的视频全部导入。手机上没有全盘扫描权限，这是唯一可行的批量方式。 */
+  async importLocalFolder(): Promise<MediaItem[]> {
+    if (!this.context) return [];
+    const docPicker = new picker.DocumentViewPicker(this.context);
+    const opts = new picker.DocumentSelectOptions();
+    opts.selectMode = picker.DocumentSelectMode.FOLDER;
+    opts.maxSelectNumber = 1;
+    const dirs = await docPicker.select(opts);
+    if (!dirs || dirs.length === 0) return [];
+
+    const dir = dirs[0];
+    const files: string[] = [];
+    await AppStore.collectVideoUris(dir, files, 0);
+    if (files.length === 0) return [];
+
+    // 目录本身也要授权，否则子项即便持久化过，父目录不可达时仍会失败
+    await LocalAccess.persist([dir].concat(files));
+
+    const imported: MediaItem[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const uri = files[i];
+      const decoded = decodeURIComponent(uri);
+      const slash = decoded.lastIndexOf('/');
+      const fileName = slash >= 0 ? decoded.substring(slash + 1) : `local_${i}.mp4`;
+      const item = await this.buildLocalItem(uri, fileName);
+      if (item) imported.push(item);
+    }
+    await this.commitLocalItems(imported);
+    return imported;
+  }
+
+  /**
+   * 递归收集视频文件。
+   * 必须用异步 IO：用户可能选整个「我的手机」，同步遍历会把主线程卡住。
+   */
+  private static async collectVideoUris(dir: string, out: string[], depth: number): Promise<void> {
+    if (depth > 6 || out.length > 2000) return;
+    let names: string[] = [];
+    try {
+      names = await fs.listFile(dir);
+    } catch (e) {
+      hilog.warn(0x0001, 'PrismLocal', 'list failed depth=%{public}d: %{public}s', depth, JSON.stringify(e));
+      return;
+    }
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      if (name.startsWith('.')) continue;
+      const child = `${dir}/${name}`;
+      let isDir = false;
+      try {
+        isDir = (await fs.stat(child)).isDirectory();
+      } catch (_e) {
+        continue;
+      }
+      if (isDir) {
+        await AppStore.collectVideoUris(child, out, depth + 1);
+      } else if (Formatters.isVideoFile(name)) {
+        out.push(child);
+      }
+    }
+  }
+
+  private async buildLocalItem(uri: string, fileName: string): Promise<MediaItem | null> {
+    if (!Formatters.isVideoFile(fileName)) return null;
+    let durationMs = 0;
+    let fileSize = 0;
+    let width = 0;
+    let height = 0;
+    try {
+      const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+      const stat = fs.statSync(file.fd);
+      fileSize = stat.size;
+      const meta = prismNative.probeLocalMedia(file.fd, 0, stat.size);
+      durationMs = meta.durationMs;
+      width = meta.width;
+      height = meta.height;
+      fs.closeSync(file.fd);
+    } catch (_e) {
+      // 探测失败不阻断导入：能打开就算可用，播放时再兜底
+    }
+
+    const parsed = Formatters.parseMediaFilename(fileName);
+    const qTag = height >= 2160 ? '4K' : (height >= 1080 ? '1080P' : parsed.qualityTag);
+    return {
+      id: `local_${uri}`,
+      sourceId: 'local_device',
+      sourceType: 'local',
+      remotePath: uri,
+      streamUrl: uri,
+      fileName,
+      fileSize,
+      mediaType: parsed.mediaType,
+      seriesKey: `local_${parsed.cleanTitle.toLowerCase()}`,
+      seriesTitle: parsed.cleanTitle,
+      seasonNo: parsed.seasonNo,
+      episodeNo: parsed.episodeNo,
+      title: parsed.cleanTitle,
+      originalTitle: '',
+      year: parsed.year,
+      overview: width > 0 ? `本地视频文件 · ${width}×${height}` : '本地设备导入视频',
+      posterUrl: '',
+      backdropUrl: '',
+      rating: 0,
+      qualityTag: qTag,
+      tmdbId: 0,
+      durationMs,
+      subtitleUrl: '',
+      addedAt: Date.now()
+    };
+  }
+
+  private async commitLocalItems(items: MediaItem[]): Promise<void> {
+    if (items.length === 0) return;
+    await this.db.upsertMediaItems(items);
+    await this.reloadAllData();
+  }
+
+  /** 启动时重新激活本机视频的持久授权，否则重启后条目全变死链。 */
+  async activateLocalPermissions(): Promise<void> {
+    const uris: string[] = [];
+    for (let i = 0; i < this.mediaItems.length; i++) {
+      const item = this.mediaItems[i];
+      if (item.sourceType === 'local' && item.remotePath) uris.push(item.remotePath);
+    }
+    await LocalAccess.activate(uris);
   }
 
   /**
@@ -906,7 +1060,9 @@ export class AppStore {
     const info = await DouyinClient.resolveShareLink(shareText);
     const item = DouyinClient.toMediaItem(info, 'douyin_share');
     if (saveOfflineNow && this.context) {
-      const saved = await DouyinClient.saveVideoToLocal(item.streamUrl, item.title, this.context, false);
+      const saved = await DouyinClient.saveVideoToLocal(item.streamUrl, item.title, this.context, {
+        fileNameHint: item.fileName
+      });
       if (saved.ok && saved.localPath) {
         item.streamUrl = saved.localPath;
         item.fileSize = saved.fileSize;
@@ -976,10 +1132,11 @@ export class AppStore {
   async saveMediaItemOffline(
     item: MediaItem,
     source: MediaSource | undefined,
-    exportToSystemPicker: boolean = false
+    exportToSystemPicker: boolean = false,
+    onProgress?: (receivedBytes: number) => void
   ): Promise<LocalVideoSaveResult> {
     if (!this.context) {
-      return { ok: false, localPath: '', fileSize: 0, exportedUri: '', message: '上下文未就绪' };
+      return { ok: false, localPath: '', fileSize: 0, exportedUri: '', message: '上下文未就绪', offline: false };
     }
     let playUrl = item.streamUrl;
     try {
@@ -991,22 +1148,34 @@ export class AppStore {
 
     let dlUrl = playUrl;
     let tempStreamId = '';
-    // Route SMB, WebDAV/Alist Basic Auth, or insecure TLS streams through local C++ Range Proxy for reliable download
-    const needsProxy = playUrl.toLowerCase().startsWith('smb://') ||
-      (source !== undefined && (source.type === 'webdav' || source.type === 'alist' || source.type === 'smb'));
+    // 远端 SMB 或 WebDAV/Alist 的 HTTP 流才走本地 Range Proxy；
+    // 已离线保存的条目 streamUrl 是沙箱路径，再套代理会把本地路径当远端打开（502）。
+    const needsProxy = RemoteSourceClient.needsRangeProxy(playUrl, source);
     if (needsProxy) {
       this.ensureNativeProxy();
       tempStreamId = `dl_${Date.now()}`;
       const proxyCfg = RemoteSourceClient.buildProxyConfig(playUrl, source);
       const proxied = prismNative.registerProxyStream(tempStreamId, proxyCfg);
-      if (proxied) {
-        dlUrl = proxied;
+      if (!proxied) {
+        return {
+          ok: false,
+          localPath: '',
+          fileSize: 0,
+          exportedUri: '',
+          message: '保存失败：本地代理未就绪，无法读取该片源',
+          offline: false
+        };
       }
+      dlUrl = proxied;
     }
 
     let res: LocalVideoSaveResult;
     try {
-      res = await DouyinClient.saveVideoToLocal(dlUrl, item.title, this.context, exportToSystemPicker);
+      res = await DouyinClient.saveVideoToLocal(dlUrl, item.title, this.context, {
+        exportToSystemPicker: exportToSystemPicker,
+        fileNameHint: item.fileName || item.remotePath,
+        onProgress: onProgress
+      });
     } finally {
       if (tempStreamId) {
         try {
@@ -1017,7 +1186,7 @@ export class AppStore {
       }
     }
 
-    if (res.ok && res.localPath) {
+    if (res.ok && res.localPath && res.offline) {
       item.streamUrl = res.localPath;
       item.fileSize = res.fileSize;
       if (!item.qualityTag.includes('已保存')) {
@@ -1027,6 +1196,63 @@ export class AppStore {
       await this.reloadAllData();
     }
     return res;
+  }
+
+  /**
+   * 清空离线影库与缓存。离线条目会从影库移除（重新扫描片源可恢复）。
+   * 返回按清理前统计估算的释放字节数。
+   */
+  async clearLocalStorage(): Promise<number> {
+    if (!this.context) return 0;
+    const ctx = this.context;
+    const before = await LocalStorageUsage.collect(ctx);
+    const savedDir = `${ctx.filesDir}/saved_videos`;
+    const offlineIds: string[] = [];
+    for (let i = 0; i < this.mediaItems.length; i++) {
+      if (this.mediaItems[i].streamUrl.startsWith(`${savedDir}/`)) {
+        offlineIds.push(this.mediaItems[i].id);
+      }
+    }
+
+    AppStore.removeDirContents(ctx.cacheDir, 0);
+    AppStore.removeDirContents(savedDir, 0);
+    if (offlineIds.length > 0) {
+      await this.db.deleteMediaItems(offlineIds);
+      await this.db.deleteWatchHistoryItems(offlineIds);
+      await this.reloadAllData();
+    }
+
+    const freed = before.offlineBytes + before.cacheBytes;
+    hilog.info(0x0001, 'PrismStorage', 'cleared bytes=%{public}d items=%{public}d',
+      freed, offlineIds.length);
+    return freed;
+  }
+
+  /** 只清空目录内容，保留目录本身；不跟随符号链接 */
+  private static removeDirContents(dir: string, depth: number): void {
+    if (depth > 6 || dir.length < 2) return;
+    let names: string[] = [];
+    try {
+      names = fs.listFileSync(dir);
+    } catch (_e) {
+      return;
+    }
+    for (let i = 0; i < names.length; i++) {
+      const child = `${dir}/${names[i]}`;
+      try {
+        const st = fs.lstatSync(child);
+        if (st.isSymbolicLink()) {
+          fs.unlinkSync(child);
+        } else if (st.isDirectory()) {
+          AppStore.removeDirContents(child, depth + 1);
+          fs.rmdirSync(child);
+        } else {
+          fs.unlinkSync(child);
+        }
+      } catch (_e) {
+        // 跳过占用中/无权限的文件，继续清理其余内容
+      }
+    }
   }
 
   async addRemoteFileToLibrary(source: MediaSource, entry: RemoteFileEntry, siblingSubUrl: string): Promise<MediaItem> {
@@ -1168,124 +1394,6 @@ export class AppStore {
       g.episodes.sort((a, b) => (a.seasonNo !== b.seasonNo ? a.seasonNo - b.seasonNo : a.episodeNo - b.episodeNo));
     });
     return groups;
-  }
-
-  async seedOpenShowcaseLibrary(): Promise<void> {
-    const now = Date.now();
-    // Legally open Creative Commons Blender Foundation films for immediate playback/testing
-    const demoItems: MediaItem[] = [
-      {
-        id: 'demo_bbb_v2',
-        sourceId: 'demo_showcase',
-        sourceType: 'webdav',
-        remotePath: '/OpenCinema/Big.Buck.Bunny.2008.1080p.mp4',
-        streamUrl: 'https://media.w3.org/2010/05/bunny/trailer.mp4',
-        fileName: 'Big.Buck.Bunny.2008.1080p.mp4',
-        fileSize: 11053871,
-        mediaType: 'movie',
-        seriesKey: 'demo_bbb_v2',
-        seriesTitle: 'Big Buck Bunny',
-        seasonNo: 1,
-        episodeNo: 0,
-        title: '大雄兔 (Big Buck Bunny)',
-        originalTitle: 'Big Buck Bunny',
-        year: 2008,
-        overview: 'Blender 基金会开源动画电影。一只温柔的大兔子在遭遇三只顽皮啮齿动物欺凌后，决定用森林机关展开一场幽默反击。内置 ASS 特效字幕与 C++ Range 流式缓存测试。',
-        posterUrl: 'local://poster_bbb',
-        backdropUrl: 'local://backdrop_bbb',
-        rating: 8.4,
-        qualityTag: 'HD · MP4',
-        tmdbId: 10378,
-        durationMs: 32000,
-        subtitleUrl: 'builtin://demo_bbb.ass',
-        addedAt: now
-      },
-      {
-        id: 'demo_sintel_v2',
-        sourceId: 'demo_showcase',
-        sourceType: 'webdav',
-        remotePath: '/OpenCinema/Sintel.2010.1080p.mp4',
-        streamUrl: 'https://media.w3.org/2010/05/sintel/trailer.mp4',
-        fileName: 'Sintel.2010.1080p.mp4',
-        fileSize: 4372373,
-        mediaType: 'movie',
-        seriesKey: 'demo_sintel_v2',
-        seriesTitle: 'Sintel',
-        seasonNo: 1,
-        episodeNo: 0,
-        title: '辛特尔 (Sintel)',
-        originalTitle: 'Sintel',
-        year: 2010,
-        overview: 'Blender 基金会第三部开源电影。孤独的女孩 Sintel 踏上跨越雪山与沙漠的漫长旅途，只为寻回曾被她救下的小幼龙 Scales。',
-        posterUrl: 'local://poster_sintel',
-        backdropUrl: 'local://backdrop_sintel',
-        rating: 8.7,
-        qualityTag: 'HD · 电影',
-        tmdbId: 45745,
-        durationMs: 52000,
-        subtitleUrl: 'builtin://demo_sintel.srt',
-        addedAt: now - 1000
-      },
-      {
-        id: 'demo_bunny_clip_v2',
-        sourceId: 'demo_showcase',
-        sourceType: 'webdav',
-        remotePath: '/OpenCinema/Open.Cinema.Demo.Clip.mp4',
-        streamUrl: 'https://media.w3.org/2010/05/video/movie_300.mp4',
-        fileName: 'Open.Cinema.Demo.Clip.2012.720p.mp4',
-        fileSize: 2757913,
-        mediaType: 'movie',
-        seriesKey: 'demo_bunny_clip_v2',
-        seriesTitle: 'Open Cinema Clip',
-        seasonNo: 1,
-        episodeNo: 0,
-        title: '开源影院测试片 (Demo Clip)',
-        originalTitle: 'Open Cinema Demo',
-        year: 2012,
-        overview: 'W3C 公开标准 MP4 流媒体测试片，用于验证硬解与 FFmpeg 软解引擎切换、倍速播放与画中画自适应。',
-        posterUrl: 'local://poster_scifi',
-        backdropUrl: 'local://poster_scifi',
-        rating: 7.9,
-        qualityTag: '720P · MP4',
-        tmdbId: 0,
-        durationMs: 30000,
-        subtitleUrl: '',
-        addedAt: now - 2000
-      }
-    ];
-    await this.db.upsertMediaItems(demoItems);
-    this.mediaItems = await this.db.listMediaItems();
-  }
-
-  getBuiltInDemoSubtitle(subUrl: string): string {
-    if (subUrl === 'builtin://demo_bbb.ass') {
-      return `[Script Info]
-Title: Big Buck Bunny Demo ASS
-ScriptType: v4.00+
-PlayResX: 1920
-PlayResY: 1080
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,HarmonyOS Sans SC,56,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,2,20,20,36,1
-Style: Banner,HarmonyOS Sans SC,44,&H00FF8B5E,&H000000FF,&H00000000,&H80000000,-1,0,8,20,20,24,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:01.00,0:00:08.00,Banner,,0,0,0,,{\\an8\\b1}PrismPlayer 特效字幕引擎已激活（ASS/SSA 演示）
-Dialogue: 0,0:00:09.00,0:00:16.00,Default,,0,0,0,,清晨的森林格外宁静，大雄兔刚刚从洞穴中醒来
-Dialogue: 0,0:00:17.00,0:00:25.00,Default,,0,0,0,,可在树梢上，三只调皮的小家伙正计划着恶作剧……`;
-    }
-    if (subUrl === 'builtin://demo_sintel.srt') {
-      return `1
-00:00:02,000 --> 00:00:08,000
-<b>PrismPlayer SRT 字幕示例</b> · 支持 ±0.1s 延时微调
-
-2
-00:00:10,000 --> 00:00:18,000
-风雪漫天，她独自穿过群山寻找那条失散的幼龙`;
-    }
-    return '';
   }
 
   handleIncomingFileWant(uri: string): void {

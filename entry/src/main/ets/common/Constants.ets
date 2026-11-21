@@ -21,13 +21,13 @@ export class AppConstants {
   static readonly PLAYBACK_RATES: number[] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
 
   /**
-   * Default hardwareSupportedFormats whitelist for OH_AVPlayer hardware decoding.
-   * Formats in this list open directly in native_hw; formats outside this list (or containing
-   * software-only audio/video tracks like DTS/TrueHD/XviD/AVI/RMVB) route straight to FFmpeg
-   * without triggering a mid-open engine switch flicker.
+   * 可交给系统播放器（OH_AVPlayer）硬解的封装白名单。
+   *
+   * 依据 Media Kit 官方支持表：mp4 / mkv / ts 均支持 H.264、H.265(10+) 视频与 AAC/MP3 音频。
+   * MKV 不再一刀切软解——只有命中 DTS/TrueHD/AC3 等系统不支持的音轨时才降级（见 Formatters）。
    */
   static readonly DEFAULT_HARDWARE_SUPPORTED_FORMATS: string[] = [
-    'mp4', 'm4v', 'mov', 'm3u8', 'ts', 'webm', 'h264', 'hevc', 'aac', 'flac', 'mp3'
+    'mp4', 'm4v', 'mov', 'm3u8', 'ts', 'mkv', 'webm', 'h264', 'hevc', 'aac', 'flac', 'mp3'
   ];
 
   static readonly HARDWARE_CODEC_MATRIX: HardwareCodecRule[] = [
@@ -35,14 +35,14 @@ export class AppConstants {
     { format: 'mov', label: 'MOV (QuickTime)', category: 'container', desc: 'Apple QuickTime / iPhone 拍摄原片封装', defaultHw: true },
     { format: 'm3u8', label: 'HLS (.m3u8 / .ts)', category: 'container', desc: 'HTTP Live Streaming 切片与直播传输流', defaultHw: true },
     { format: 'webm', label: 'WebM', category: 'container', desc: 'Web 开放媒体容器封装', defaultHw: true },
-    { format: 'mkv', label: 'MKV (Matroska)', category: 'container', desc: '多音轨蓝光原盘封装（常含 AC3/DTS/PGSSUB，建议默认 FFmpeg 软解防切屏）', defaultHw: false },
+    { format: 'mkv', label: 'MKV (Matroska)', category: 'container', desc: '多音轨蓝光封装：H.264/H.265 可硬解，命中 DTS/TrueHD 音轨时自动降级软解', defaultHw: true },
     { format: 'avi', label: 'AVI (XviD / DivX)', category: 'container', desc: '传统 AVI 交错封装（系统硬解不支持，直接走 FFmpeg 软解）', defaultHw: false },
     { format: 'rmvb', label: 'RMVB / FLV / MPG', category: 'container', desc: 'RealMedia / Flash / MPEG-PS 怀旧封装（直接走 FFmpeg 软解）', defaultHw: false },
     { format: 'h264', label: 'H.264 / AVC', category: 'video', desc: '8-bit 硬件加速解码（最高 4K 60fps）', defaultHw: true },
     { format: 'hevc', label: 'H.265 / HEVC', category: 'video', desc: 'Main / Main10 HDR10 硬件加速解码', defaultHw: true },
     { format: 'av1', label: 'AV1 / VP9', category: 'video', desc: '新一代高压缩编码（部分芯片需 FFmpeg 软解）', defaultHw: false },
     { format: 'aac', label: 'AAC / FLAC / MP3', category: 'audio', desc: '标准立体声与无损音频直通硬解', defaultHw: true },
-    { format: 'dts', label: 'DTS-HD / TrueHD / EAC3', category: 'audio', desc: '影院多声道源码音轨（系统硬解易无声或报错，自动路由 FFmpeg 软解）', defaultHw: false }
+    { format: 'dts', label: 'DTS-HD / TrueHD / EAC3', category: 'audio', desc: '多声道源码音轨（系统硬解易无声或报错，自动路由 FFmpeg 软解）', defaultHw: false }
   ];
 
   /**
@@ -83,7 +83,7 @@ export const PC_SHORTCUTS: ShortcutTip[] = [
   { keys: '← / →', action: '快退 / 快进 5 秒' },
   { keys: 'Shift + ← / →', action: '快退 / 快进 30 秒' },
   { keys: '↑ / ↓', action: '音量 +5% / -5%' },
-  { keys: 'F / 双击画面', action: '切换全屏影院模式' },
+  { keys: 'F / 双击画面', action: '切换全屏' },
   { keys: 'Esc', action: '退出全屏或关闭浮层' },
   { keys: '[ / ]', action: '降低 / 提高播放倍速' },
   { keys: 'S', action: '打开字幕中心' },

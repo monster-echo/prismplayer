@@ -233,7 +233,7 @@ struct SourceBrowserPage {
                     Row({ space: 6 }) {
                       if (idx > 0) {
                         SymbolGlyph($r('sys.symbol.chevron_right'))
-                        .fontSize(11)
+                        .fontSize(12)
                         .fontColor([$r('app.color.text_muted')])
                       }
                       Text(crumb.label)
@@ -253,7 +253,7 @@ struct SourceBrowserPage {
                   }, (c: BreadcrumbSegment) => `${c.path}_${c.label}`)
                 }
                 .padding({ left: 18, right: 18, top: 10, bottom: 6 })
-              }
+              }.edgeEffect(EdgeEffect.Spring)
               .scrollable(ScrollDirection.Horizontal)
               .align(Alignment.TopStart)
               .scrollBar(BarState.Off)
@@ -297,7 +297,7 @@ struct SourceBrowserPage {
                 Blank()
                 Text(`${this.getFilteredEntries().length} 项`)
                 .fontSize(11)
-                .fontColor($r('app.color.text_muted'))
+                .fontColor($r('app.color.text_body_muted'))
                 if (this.pathHistory.length > 0) {
                   Text('关闭')
                   .fontSize(12)
@@ -312,7 +312,7 @@ struct SourceBrowserPage {
               if (this.loading) {
                 Column({ space: 10 }) {
                   LoadingProgress().width(36).height(36).color($r('app.color.accent_blue'))
-                  Text('正在读取目录与片源列表...').fontSize(13).fontColor($r('app.color.text_muted'))
+                  Text('正在读取目录与片源列表...').fontSize(13).fontColor($r('app.color.text_body_muted'))
                 }
                 .width('100%')
                 .padding({ top: 72 })
@@ -398,13 +398,13 @@ struct SourceBrowserPage {
                           .textOverflow({ overflow: TextOverflow.Ellipsis })
                           Row({ space: 8 }) {
                             if (entry.isDirectory) {
-                              Text(entry.lastModified || '文件夹').fontSize(11).fontColor($r('app.color.text_muted'))
+                              Text(entry.lastModified || '文件夹').fontSize(11).fontColor($r('app.color.text_body_muted'))
                             } else {
                               Text(
                               entry.size > 0
                               ? Formatters.formatBytes(entry.size)
                               : (entry.lastModified || '网络流媒体')
-                              ).fontSize(11).fontColor($r('app.color.text_muted'))
+                              ).fontSize(11).fontColor($r('app.color.text_body_muted'))
                               if (entry.isSubtitle) {
                                 Text('外挂字幕').fontSize(10).fontColor($r('app.color.success'))
                               } else if (entry.name.toLowerCase().endsWith('.nfo')) {
@@ -422,7 +422,7 @@ struct SourceBrowserPage {
                           Row({ space: 6 }) {
                             Button() {
                               Row({ space: 4 }) {
-                                SymbolGlyph($r('sys.symbol.play_fill')).fontSize(11).fontColor([Color.White])
+                                SymbolGlyph($r('sys.symbol.play_fill')).fontSize(12).fontColor([Color.White])
                                 Text('播放').fontSize(12).fontColor(Color.White)
                               }
                             }
@@ -505,7 +505,7 @@ struct SourceBrowserPage {
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                   Text(this.pendingPattern ? '再次绘制确认' : '绘制图案（至少 4 点）')
                   .fontSize(12)
-                  .fontColor($r('app.color.text_muted'))
+                  .fontColor($r('app.color.text_body_muted'))
                   PatternPad({
                     padSize: 230,
                     onComplete: (pattern: string) => { this.onPattern(pattern); },

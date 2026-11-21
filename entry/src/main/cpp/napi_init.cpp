@@ -1,5 +1,6 @@
 #include <ace/xcomponent/native_interface_xcomponent.h>
 #include <hilog/log.h>
+#include <multimedia/player_framework/native_avcapability.h>
 #include <napi/native_api.h>
 #include <atomic>
 #include <chrono>
@@ -14,6 +15,9 @@
 #include "smb2_client.h"
 #include "stream_proxy.h"
 #include "xcomponent_bridge.h"
+
+// 定义在 rar_archive.cpp
+void RegisterRarArchive(napi_env env, napi_value exports);
 
 #undef LOG_TAG
 #define LOG_TAG "PrismNapi"
@@ -593,7 +597,7 @@ prism::SmbConnectionConfig ReadSmbConfigArg(napi_env env, napi_value obj) {
 }
 
 struct SmbAsyncWork {
-    enum Kind { TEST, LIST, READ_TEXT };
+    enum Kind { TEST, LIST, READ_TEXT, READ_BYTES };
     Kind kind;
     prism::SmbConnectionConfig cfg;
     std::string targetPath;
@@ -606,6 +610,7 @@ struct SmbAsyncWork {
     std::string error;
     std::vector<prism::SmbFileEntry> entries;
     std::string textContent;
+    std::vector<uint8_t> fileBytes;
 
     napi_deferred deferred = nullptr;
     napi_async_work work = nullptr;
@@ -631,11 +636,15 @@ void ExecuteSmbAsync(napi_env /*env*/, void* data) {
         job->ok = res.ok;
         job->error = res.error;
         job->entries = std::move(res.entries);
-    } else if (job->kind == SmbAsyncWork::READ_TEXT) {
+    } else if (job->kind == SmbAsyncWork::READ_TEXT || job->kind == SmbAsyncWork::READ_BYTES) {
         std::vector<uint8_t> bytes;
         if (sess.ReadSmallFile(job->targetPath, job->maxBytes, bytes, job->error)) {
             job->ok = true;
-            job->textContent.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            if (job->kind == SmbAsyncWork::READ_TEXT) {
+                job->textContent.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            } else {
+                job->fileBytes = std::move(bytes);
+            }
         } else {
             job->ok = false;
         }
@@ -649,7 +658,18 @@ void CompleteSmbAsync(napi_env env, napi_status /*status*/, void* data) {
     std::unique_ptr<SmbAsyncWork> job(static_cast<SmbAsyncWork*>(data));
     napi_value result = nullptr;
 
-    if (job->kind == SmbAsyncWork::READ_TEXT) {
+    if (job->kind == SmbAsyncWork::READ_BYTES) {
+        void* raw = nullptr;
+        napi_value buf = nullptr;
+        if (napi_create_arraybuffer(env, job->fileBytes.size(), &raw, &buf) == napi_ok) {
+            if (!job->fileBytes.empty() && raw != nullptr) {
+                std::memcpy(raw, job->fileBytes.data(), job->fileBytes.size());
+            }
+            result = buf;
+        } else {
+            napi_create_arraybuffer(env, 0, &raw, &result);
+        }
+    } else if (job->kind == SmbAsyncWork::READ_TEXT) {
         napi_create_string_utf8(env, job->textContent.c_str(), job->textContent.size(), &result);
     } else if (job->kind == SmbAsyncWork::TEST) {
         napi_create_object(env, &result);
@@ -722,6 +742,28 @@ napi_value SmbListDirectory(napi_env env, napi_callback_info info) {
     return LaunchSmbWork(env, job, "PrismSmbList");
 }
 
+/**
+ * 按字节读取 SMB 上的小文件（海报、封面等二进制资源）。
+ * 与 smbReadTextFile 的区别只在返回类型：这里是 ArrayBuffer，不经 UTF-8 解码。
+ */
+napi_value SmbReadFileBytes(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    auto* job = new SmbAsyncWork();
+    job->kind = SmbAsyncWork::READ_BYTES;
+    job->maxBytes = 16 * 1024 * 1024;
+    if (argc >= 1) job->cfg = ReadSmbConfigArg(env, args[0]);
+    if (argc >= 2) job->targetPath = GetStringArg(env, args[1]);
+    if (argc >= 3) {
+        int32_t maxB = 0;
+        if (napi_get_value_int32(env, args[2], &maxB) == napi_ok && maxB > 0) {
+            job->maxBytes = static_cast<size_t>(maxB);
+        }
+    }
+    return LaunchSmbWork(env, job, "PrismSmbReadBytes");
+}
+
 napi_value SmbReadTextFile(napi_env env, napi_callback_info info) {
     size_t argc = 3;
     napi_value args[3];
@@ -737,6 +779,36 @@ napi_value SmbReadTextFile(napi_env env, napi_callback_info info) {
         }
     }
     return LaunchSmbWork(env, job, "PrismSmbReadText");
+}
+
+/**
+ * 查询本机是否存在该 mime 的**硬件**视频解码器。
+ *
+ * 走 OH_AVCodec_GetCapabilityByCategory(mime, false, HARDWARE)：只有存在硬解实现时才返回非空，
+ * 因此不需要再调 OH_AVCapability_IsHardware 二次判断。
+ * 返回 { supported, name }；查不到能力时 supported=false，调用方据此降级软解。
+ */
+napi_value QueryVideoDecoderCapability(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    napi_value obj;
+    napi_create_object(env, &obj);
+    SetBoolProp(env, obj, "supported", false);
+    SetStrProp(env, obj, "name", "");
+
+    if (argc < 1) return obj;
+    std::string mime = GetStringArg(env, args[0]);
+    if (mime.empty()) return obj;
+
+    OH_AVCapability* cap = OH_AVCodec_GetCapabilityByCategory(mime.c_str(), false, HARDWARE);
+    if (cap == nullptr) return obj;
+
+    const char* name = OH_AVCapability_GetName(cap);
+    SetBoolProp(env, obj, "supported", true);
+    SetStrProp(env, obj, "name", name != nullptr ? std::string(name) : std::string(mime));
+    return obj;
 }
 
 } // namespace
@@ -782,11 +854,14 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"getPlayerTracks", nullptr, GetPlayerTracks, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPlayerEventCallback", nullptr, SetPlayerEventCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"probeLocalMedia", nullptr, ProbeLocalMedia, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"queryVideoDecoderCapability", nullptr, QueryVideoDecoderCapability, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smbTestConnection", nullptr, SmbTestConnection, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smbListDirectory", nullptr, SmbListDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smbReadTextFile", nullptr, SmbReadTextFile, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"smbReadFileBytes", nullptr, SmbReadFileBytes, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
+    RegisterRarArchive(env, exports);
     return exports;
 }
 EXTERN_C_END

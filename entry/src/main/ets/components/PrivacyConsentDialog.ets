@@ -31,7 +31,7 @@ export struct PrivacyConsentDialog {
           .justifyContent(FlexAlign.Center)
 
           Column({ space: 2 }) {
-            Text('欢迎使用棱镜影院 PrismPlayer')
+            Text('欢迎使用棱镜播放器 PrismPlayer')
               .fontSize(17)
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_primary'))

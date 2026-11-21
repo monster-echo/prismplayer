@@ -1,6 +1,6 @@
 # PrismPlayer
 
-**Turn your own NAS, cloud drive and local files into a private cinema on HarmonyOS.**
+**Turn your own NAS, cloud drive and local files into a private media library on HarmonyOS.**
 
 PrismPlayer is a native video player for HarmonyOS. Connect your own WebDAV, SMB, Plex, Emby, AList or S3 sources, get an automatic poster wall, and play 4K HDR files directly. No bundled content, and your media and credentials are never uploaded.
 
