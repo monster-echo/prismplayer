@@ -20,10 +20,10 @@ export struct NavHeaderBar {
       if (this.backLabel) {
         Button() {
           Row({ space: 4 }) {
-            SymbolGlyph($r('sys.symbol.chevron_left'))
-              .fontSize(18)
-              .fontWeight(FontWeight.Medium)
-              .fontColor([$r('app.color.text_primary')])
+            Image($r('app.media.ic_chevron_left'))
+              .width(16)
+              .height(16)
+              .fillColor($r('app.color.text_primary'))
             Text(this.backLabel)
               .fontSize(13)
               .fontWeight(FontWeight.Medium)
@@ -39,10 +39,10 @@ export struct NavHeaderBar {
         .onClick(() => this.onBack())
       } else {
         Button({ type: ButtonType.Circle }) {
-          SymbolGlyph($r('sys.symbol.chevron_left'))
-            .fontSize(20)
-            .fontWeight(FontWeight.Medium)
-            .fontColor([$r('app.color.text_primary')])
+          Image($r('app.media.ic_chevron_left'))
+            .width(16)
+            .height(16)
+            .fillColor($r('app.color.text_primary'))
         }
         .width(38)
         .height(38)

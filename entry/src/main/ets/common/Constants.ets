@@ -18,6 +18,14 @@ export class AppConstants {
   static readonly SUBTITLE_EXTENSIONS: string[] = [
     '.ass', '.ssa', '.srt', '.vtt'
   ];
+  /** 音乐曲目：系统 AVPlayer 原生支持的无损 / 有损格式，SMB 与网盘目录同样适用。 */
+  static readonly AUDIO_EXTENSIONS: string[] = [
+    '.mp3', '.flac', '.m4a', '.aac', '.wav', '.ogg', '.opus', '.ape', '.wma', '.aiff', '.aif', '.alac', '.dsf'
+  ];
+  static readonly IMAGE_EXTENSIONS: string[] = ['.jpg', '.jpeg', '.png', '.webp'];
+  /** 本机存储片源的固定 ID：历史版本导入的条目都挂着这个 sourceId，不能改。 */
+  static readonly LOCAL_SOURCE_ID: string = 'local_device';
+  static readonly LOCAL_SOURCE_NAME: string = '本机存储';
   static readonly PLAYBACK_RATES: number[] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
 
   /**

@@ -4,6 +4,8 @@ import {
   MediaDetailParams,
   MediaItem,
   MediaSource,
+  MusicAlbum,
+  MusicLaunchParams,
   PlayerLaunchParams,
   RouteRequest,
   SeriesGroup,
@@ -14,6 +16,7 @@ import { PrivacyConsentDialog } from '../components/PrivacyConsentDialog';
 import { Layout } from '../common/Layout';
 import { AppConstants } from '../common/Constants';
 import { AppStore } from '../services/AppStore';
+import { MusicPlayerService } from '../services/MusicPlayerService';
 import { HistoryView } from './HistoryView';
 import { LibraryView } from './LibraryView';
 import { SettingsView } from './SettingsView';
@@ -28,6 +31,10 @@ struct Index {
   @Local hoverNav: number = -1;
 
   aboutToAppear(): void {
+    // 音乐服务要拿到 AbilityContext 才能申请后台音频长时任务
+    MusicPlayerService.getInstance().setContext(
+      this.getUIContext().getHostContext() as common.UIAbilityContext
+    );
     // 卡片 / 桌面快捷方式 / 状态栏 / 分享链接 / 应用接续 都通过这两个回调落到页面上
     this.store.registerLaunchHandler((params: PlayerLaunchParams) => {
       setTimeout(() => {
@@ -62,7 +69,26 @@ struct Index {
     this.pushRoute('pages/LegalDocPage', { docType } as LegalDocParams);
   }
 
+  /** 电影列表播放：从第一部开始，播完由播放页自动接下一部。 */
+  private playMovieList(items: MediaItem[]): void {
+    if (items.length === 0) return;
+    const first = items[0];
+    const src = this.store.sources.find(s => s.id === first.sourceId);
+    const params: PlayerLaunchParams = {
+      item: first,
+      source: src,
+      startPositionMs: this.store.getHistoryForItem(first.id)?.positionMs || 0,
+      playlist: items
+    };
+    this.pushRoute('pages/PlayerPage', params);
+  }
+
   private launchPlayer(item: MediaItem, startPosMs: number): void {
+    // 音频条目统一走音乐播放器，视频引擎不处理纯音频
+    if (item.mediaType === 'track') {
+      this.openMusicTrack(item);
+      return;
+    }
     const src = this.store.sources.find(s => s.id === item.sourceId);
     const params: PlayerLaunchParams = {
       item,
@@ -70,6 +96,17 @@ struct Index {
       startPositionMs: startPosMs
     };
     this.pushRoute('pages/PlayerPage', params);
+  }
+
+  private openMusicTrack(item: MediaItem, queue?: MediaItem[]): void {
+    const list = queue && queue.length > 0 ? queue : this.store.getMusicQueue(item);
+    const params: MusicLaunchParams = { item, queue: list };
+    this.pushRoute('pages/MusicPlayerPage', params);
+  }
+
+  private playAlbum(album: MusicAlbum): void {
+    if (album.tracks.length === 0) return;
+    this.openMusicTrack(album.tracks[0], album.tracks);
   }
 
   private openMovieDetail(item: MediaItem): void {
@@ -191,7 +228,10 @@ struct Index {
         onPlayDirect: (item: MediaItem, startPosMs: number) => this.launchPlayer(item, startPosMs),
         onGoSources: () => { this.activeTab = 1; },
         onOpenSearch: () => this.pushRoute('pages/SearchPage'),
-        onOpenVault: () => this.pushRoute('pages/PrivacyVaultPage')
+        onOpenVault: () => this.pushRoute('pages/PrivacyVaultPage'),
+        onPlayAlbum: (album: MusicAlbum) => this.playAlbum(album),
+        onPlayMovieList: (items: MediaItem[]) => this.playMovieList(items),
+        onOpenMusicPlayer: () => this.pushRoute('pages/MusicPlayerPage')
       })
     } else if (this.activeTab === 1) {
       SourcesView({

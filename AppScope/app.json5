@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "tech.zhongbei.prismplayer",
     "vendor": "prism",
-    "versionCode": 1000400,
-    "versionName": "1.0.4",
+    "versionCode": 1000500,
+    "versionName": "1.0.5",
     "buildVersion": "1",
     "icon": "$media:layered_image",
     "label": "$string:app_name"

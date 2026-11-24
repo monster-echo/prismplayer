@@ -5,6 +5,7 @@ import {
   MediaDetailParams,
   MediaItem,
   MediaSource,
+  MusicLaunchParams,
   PlayerLaunchParams,
   RemoteFileEntry,
   SourceBrowserParams
@@ -36,20 +37,7 @@ struct SourceBrowserPage {
   @Local pendingPattern: string = '';
   @Local pinError: string = '';
   @Local ytSearchQuery: string = '';
-  @Local savingEntryPath: string = '';
-  @Local saveFeedbackText: string = '';
   @Local refreshing: boolean = false;
-
-  private async saveEntryVideoOffline(entry: RemoteFileEntry): Promise<void> {
-    if (!this.source || this.savingEntryPath) return;
-    this.savingEntryPath = entry.path;
-    this.saveFeedbackText = `正在下载保存《${entry.name.substring(0, 16)}》...`;
-    const subUrl = this.findSiblingSubtitleUrl(entry);
-    const item = await this.store.addRemoteFileToLibrary(this.source, entry, subUrl);
-    const res = await this.store.saveMediaItemOffline(item, this.source, false);
-    this.savingEntryPath = '';
-    this.saveFeedbackText = res.ok ? `✓ ${res.message}` : res.message;
-  }
 
   aboutToAppear(): void {
     const params = this.getUIContext().getRouter().getParams() as SourceBrowserParams | undefined;
@@ -181,6 +169,13 @@ struct SourceBrowserPage {
       this.loadDirectory(entry.path, true);
       return;
     }
+    // 音频交给音乐播放器：先入库，再按同专辑组队列
+    if (entry.isAudio) {
+      const track: MediaItem = await this.store.addRemoteFileToLibrary(this.source, entry, '');
+      const musicParams: MusicLaunchParams = { item: track, queue: this.store.getMusicQueue(track) };
+      this.getUIContext().getRouter().pushUrl({ url: 'pages/MusicPlayerPage', params: musicParams });
+      return;
+    }
     if (!entry.isVideo) return;
     const subUrl = this.findSiblingSubtitleUrl(entry);
     const item: MediaItem = await this.store.addRemoteFileToLibrary(this.source, entry, subUrl);
@@ -195,6 +190,27 @@ struct SourceBrowserPage {
       const detail: MediaDetailParams = { movie: item };
       this.getUIContext().getRouter().pushUrl({ url: 'pages/MediaDetailPage', params: detail });
     }
+  }
+
+  /** 本机目录是 file://docs/... URI，标题栏只展示用户认得的那一段。 */
+  private displayPath(): string {
+    if (!this.source || this.source.type !== 'local') return this.currentDirPath;
+    let p = this.currentDirPath;
+    try {
+      p = decodeURIComponent(p);
+    } catch (_e) {
+      // 保留原始路径，避免一个坏字符让整页无法渲染
+    }
+    // 用户选的目录是 file://docs/.../currentUser/...；沙箱目录只出现在开发联调时
+    const markers: string[] = ['/currentUser', '/haps/entry/files'];
+    for (let i = 0; i < markers.length; i++) {
+      const idx = p.indexOf(markers[i]);
+      if (idx >= 0) {
+        p = p.substring(idx + markers[i].length);
+        break;
+      }
+    }
+    return p || '/';
   }
 
   @Builder
@@ -214,7 +230,7 @@ struct SourceBrowserPage {
     Column() {
       NavHeaderBar({
         title: this.source ? this.source.name : '远程目录',
-        subtitle: this.currentDirPath,
+        subtitle: this.displayPath(),
         rightIcon: $r('sys.symbol.arrow_clockwise'),
         onBack: () => this.navigateBackOneLevel(),
         onRightAction: () => this.loadDirectory(this.currentDirPath, false)
@@ -232,9 +248,9 @@ struct SourceBrowserPage {
                   ForEach(this.getBreadcrumbs(), (crumb: BreadcrumbSegment, idx: number) => {
                     Row({ space: 6 }) {
                       if (idx > 0) {
-                        SymbolGlyph($r('sys.symbol.chevron_right'))
-                        .fontSize(12)
-                        .fontColor([$r('app.color.text_muted')])
+                        Text('/')
+                          .fontSize(12)
+                          .fontColor($r('app.color.text_muted'))
                       }
                       Text(crumb.label)
                       .fontSize(12)
@@ -392,8 +408,8 @@ struct SourceBrowserPage {
                         Column({ space: 3 }) {
                           Text(entry.name)
                           .fontSize(14)
-                          .fontWeight(entry.isVideo || entry.isDirectory ? FontWeight.Medium : FontWeight.Normal)
-                          .fontColor(entry.isVideo || entry.isDirectory ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+                          .fontWeight(entry.isVideo || entry.isAudio || entry.isDirectory ? FontWeight.Medium : FontWeight.Normal)
+                          .fontColor(entry.isVideo || entry.isAudio || entry.isDirectory ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
                           .maxLines(1)
                           .textOverflow({ overflow: TextOverflow.Ellipsis })
                           Row({ space: 8 }) {
@@ -405,7 +421,9 @@ struct SourceBrowserPage {
                               ? Formatters.formatBytes(entry.size)
                               : (entry.lastModified || '网络流媒体')
                               ).fontSize(11).fontColor($r('app.color.text_body_muted'))
-                              if (entry.isSubtitle) {
+                              if (entry.isAudio) {
+                                Text('音乐').fontSize(10).fontColor($r('app.color.accent_blue'))
+                              } else if (entry.isSubtitle) {
                                 Text('外挂字幕').fontSize(10).fontColor($r('app.color.success'))
                               } else if (entry.name.toLowerCase().endsWith('.nfo')) {
                                 Text('NFO 元数据').fontSize(10).fontColor($r('app.color.accent_cyan'))
@@ -418,7 +436,7 @@ struct SourceBrowserPage {
                         .layoutWeight(1)
                         .alignItems(HorizontalAlign.Start)
 
-                        if (entry.isVideo) {
+                        if (entry.isVideo || entry.isAudio) {
                           Row({ space: 6 }) {
                             Button() {
                               Row({ space: 4 }) {
@@ -432,15 +450,6 @@ struct SourceBrowserPage {
                             .borderRadius(8)
                             .onClick(() => this.openOrPlayEntry(entry, true))
 
-                            Button() {
-                              SymbolGlyph($r('sys.symbol.arrow_down_circle')).fontSize(14).fontColor([$r('app.color.text_primary')])
-                            }
-                            .width(32)
-                            .height(32)
-                            .backgroundColor($r('app.color.bg_secondary'))
-                            .borderRadius(8)
-                            .border({ width: 0.6, color: $r('app.color.fill_strong') })
-                            .onClick(() => this.saveEntryVideoOffline(entry))
                           }
                         } else if (entry.isDirectory) {
                           if (this.source && this.store.isPathRuleHidden(this.source.id, entry.path)) {

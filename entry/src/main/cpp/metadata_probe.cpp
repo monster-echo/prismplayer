@@ -40,6 +40,14 @@ LocalMediaMeta ProbeLocalMediaFd(int32_t fd, int64_t offset, int64_t size) {
                 if (OH_AVFormat_GetStringValue(format, OH_AVMETADATA_EXTRACTOR_MIME_TYPE, &mime) && mime) {
                     meta.mimeType = mime;
                 }
+                const char* artist = nullptr;
+                if (OH_AVFormat_GetStringValue(format, OH_AVMETADATA_EXTRACTOR_ARTIST, &artist) && artist) {
+                    meta.artist = artist;
+                }
+                const char* album = nullptr;
+                if (OH_AVFormat_GetStringValue(format, OH_AVMETADATA_EXTRACTOR_ALBUM, &album) && album) {
+                    meta.album = album;
+                }
             }
             OH_AVFormat_Destroy(format);
         }

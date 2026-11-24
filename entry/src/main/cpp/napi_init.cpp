@@ -580,6 +580,8 @@ napi_value ProbeLocalMedia(napi_env env, napi_callback_info info) {
     SetIntProp(env, obj, "height", meta.height);
     SetStrProp(env, obj, "title", meta.title);
     SetStrProp(env, obj, "mimeType", meta.mimeType);
+    SetStrProp(env, obj, "artist", meta.artist);
+    SetStrProp(env, obj, "album", meta.album);
     return obj;
 }
 

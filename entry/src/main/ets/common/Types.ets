@@ -28,7 +28,10 @@ export function serializeSourceExtra(cfg: SourceExtraConfig): string {
   }
 }
 
-export type MediaCategory = 'all' | 'movie' | 'tv' | 'favorite' | 'private';
+export type MediaCategory = 'all' | 'movie' | 'tv' | 'music' | 'favorite' | 'private';
+
+/** 条目种类：电影 / 剧集单集 / 音乐曲目。音乐走独立播放器，不进入视频链路。 */
+export type MediaKind = 'movie' | 'episode' | 'track';
 
 export interface SubtitleTrackOption {
   label: string;
@@ -68,6 +71,10 @@ export interface RemoteFileEntry {
   contentType: string;
   isVideo: boolean;
   isSubtitle: boolean;
+  /** 音频文件；本机片源与远端目录都可能命中，缺省视为非音频 */
+  isAudio?: boolean;
+  /** 图片文件（封面 / 海报），本机片源用于取专辑封面 */
+  isImage?: boolean;
 }
 
 export interface MediaItem {
@@ -78,7 +85,7 @@ export interface MediaItem {
   streamUrl: string;
   fileName: string;
   fileSize: number;
-  mediaType: 'movie' | 'episode';
+  mediaType: MediaKind;
   seriesKey: string;
   seriesTitle: string;
   seasonNo: number;
@@ -97,6 +104,25 @@ export interface MediaItem {
   subtitleTracks?: SubtitleTrackOption[];
   isFavorite?: boolean;
   addedAt: number;
+  /** 音乐曲目：歌手 / 专辑 / 曲序（媒体标签优先，缺失时按目录与文件名推断） */
+  artist?: string;
+  album?: string;
+  trackNo?: number;
+}
+
+/** 音乐专辑：按「同一片源 + 专辑名 + 歌手」聚合，封面取曲目关联的目录封面。 */
+export interface MusicAlbum {
+  albumKey: string;
+  album: string;
+  artist: string;
+  coverUrl: string;
+  tracks: MediaItem[];
+}
+
+/** 音乐播放页入参：从某首开始，携带整张专辑 / 整个目录的队列。 */
+export interface MusicLaunchParams {
+  item: MediaItem;
+  queue: MediaItem[];
 }
 
 export interface SeriesGroup {
@@ -140,6 +166,14 @@ export interface ParsedFilenameInfo {
   seasonNo: number;
   episodeNo: number;
   qualityTag: string;
+}
+
+/** 音频文件解析结果：目录推断 + 文件名兜底，媒体标签命中时由调用方覆盖。 */
+export interface ParsedTrackInfo {
+  title: string;
+  artist: string;
+  album: string;
+  trackNo: number;
 }
 
 export interface SubtitleCue {

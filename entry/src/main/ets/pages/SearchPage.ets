@@ -1,7 +1,7 @@
 import { Formatters } from '../common/Formatters';
 import { MediaArtwork } from '../common/MediaArtwork';
 import { PageShell } from '../components/PageShell';
-import { MediaDetailParams, MediaItem, PlayerLaunchParams } from '../common/Types';
+import { MediaDetailParams, MediaItem, MusicLaunchParams, PlayerLaunchParams } from '../common/Types';
 import { AppStore } from '../services/AppStore';
 
 type SearchFilterKind = 'all' | '4k' | 'sub' | 'watching';
@@ -40,6 +40,10 @@ struct SearchPage {
   }
 
   private openDetail(item: MediaItem): void {
+    if (item.mediaType === 'track') {
+      this.playItem(item);
+      return;
+    }
     const params: MediaDetailParams = { movie: item };
     this.getUIContext().getRouter().pushUrl({
       url: 'pages/MediaDetailPage',
@@ -48,6 +52,11 @@ struct SearchPage {
   }
 
   private playItem(item: MediaItem): void {
+    if (item.mediaType === 'track') {
+      const musicParams: MusicLaunchParams = { item, queue: this.store.getMusicQueue(item) };
+      this.getUIContext().getRouter().pushUrl({ url: 'pages/MusicPlayerPage', params: musicParams });
+      return;
+    }
     const hist = this.store.getHistoryForItem(item.id);
     const params: PlayerLaunchParams = {
       item,
@@ -80,10 +89,10 @@ struct SearchPage {
           // Top Search Bar with Back button
           Row({ space: 10 }) {
             Button({ type: ButtonType.Circle }) {
-              SymbolGlyph($r('sys.symbol.chevron_left'))
-                .fontSize(20)
-                .fontWeight(FontWeight.Medium)
-                .fontColor([$r('app.color.text_primary')])
+              Image($r('app.media.ic_chevron_left'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.text_primary'))
             }
             .width(38)
             .height(38)

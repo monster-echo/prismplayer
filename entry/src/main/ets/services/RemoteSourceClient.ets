@@ -4,6 +4,7 @@ import { MediaItem, MediaSource, RemoteFileEntry, parseSourceExtra } from '../co
 import { DouyinClient } from './DouyinClient';
 import { EmbyClient } from './EmbyClient';
 import { IptvClient } from './IptvClient';
+import { LocalFileClient } from './LocalFileClient';
 import { PlexClient } from './PlexClient';
 import { S3Client } from './S3Client';
 import { SmbClient } from './SmbClient';
@@ -18,6 +19,7 @@ export interface ResolvedPlayableStream {
 
 export class RemoteSourceClient {
   static async testConnection(source: MediaSource): Promise<WebDavTestResult> {
+    if (source.type === 'local') return LocalFileClient.testConnection(source);
     if (source.type === 'smb') return SmbClient.testConnection(source);
     if (source.type === 'plex') return PlexClient.testConnection(source);
     if (source.type === 'emby') return EmbyClient.testConnection(source);
@@ -29,17 +31,40 @@ export class RemoteSourceClient {
   }
 
   static async listDirectory(source: MediaSource, dirPath: string): Promise<RemoteFileEntry[]> {
-    if (source.type === 'smb') return SmbClient.listDirectory(source, dirPath);
-    if (source.type === 'plex') return PlexClient.listDirectory(source, dirPath);
-    if (source.type === 'emby') return EmbyClient.listDirectory(source, dirPath);
-    if (source.type === 's3') return S3Client.listDirectory(source, dirPath);
-    if (source.type === 'youtube') return YouTubeClient.listDirectory(source, dirPath);
-    if (source.type === 'douyin') return DouyinClient.listDirectory(source, dirPath);
-    if (source.type === 'iptv') return IptvClient.listDirectory(source, dirPath);
-    return WebDavClient.listDirectory(source, dirPath);
+    let entries: RemoteFileEntry[] = [];
+    if (source.type === 'local') {
+      entries = await LocalFileClient.listDirectory(source, dirPath);
+    } else if (source.type === 'smb') {
+      entries = await SmbClient.listDirectory(source, dirPath);
+    } else if (source.type === 'plex') {
+      entries = await PlexClient.listDirectory(source, dirPath);
+    } else if (source.type === 'emby') {
+      entries = await EmbyClient.listDirectory(source, dirPath);
+    } else if (source.type === 's3') {
+      entries = await S3Client.listDirectory(source, dirPath);
+    } else if (source.type === 'youtube') {
+      entries = await YouTubeClient.listDirectory(source, dirPath);
+    } else if (source.type === 'douyin') {
+      entries = await DouyinClient.listDirectory(source, dirPath);
+    } else if (source.type === 'iptv') {
+      entries = await IptvClient.listDirectory(source, dirPath);
+    } else {
+      entries = await WebDavClient.listDirectory(source, dirPath);
+    }
+    // 远端各协议只标了视频/字幕；音乐与图片统一在这里补齐，目录页与扫描才有音频入口
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (e.isDirectory) continue;
+      if (e.isAudio === undefined) e.isAudio = Formatters.isAudioFile(e.name);
+      if (e.isImage === undefined) e.isImage = Formatters.isImageFile(e.name);
+    }
+    return entries;
   }
 
   static async fetchText(urlOrPath: string, source?: MediaSource): Promise<string> {
+    if (source && source.type === 'local') {
+      return LocalFileClient.readText(urlOrPath);
+    }
     if (source && source.type === 'smb') {
       return SmbClient.fetchText(urlOrPath, source);
     }
@@ -67,7 +92,7 @@ export class RemoteSourceClient {
    * - YouTube: resolves fresh direct MP4/HLS stream and auto-captions from videoId/mirror
    */
   static async resolvePlayableStream(item: MediaItem, source?: MediaSource): Promise<ResolvedPlayableStream> {
-    // 已离线保存的条目直接返回本地路径，不能再当作 S3/YouTube/抖音 远端地址解析
+    // 本机源 / 本地文件直接返回路径，不能再当作 S3/YouTube/抖音 远端地址解析
     const url = item.streamUrl;
     if (url.startsWith('/') || url.startsWith('file://') ||
       url.startsWith('content://') || url.startsWith('datashare://')) {
@@ -116,7 +141,7 @@ export class RemoteSourceClient {
 
   /**
    * 判断播放地址是否需要走本地 Range Proxy。
-   * 已离线保存的条目 streamUrl 是沙箱路径，即使仍挂着 SMB/WebDAV 片源也不能套代理，
+   * 本机文件是绝对路径，即使条目的 source 仍是 SMB/WebDAV 也不能套代理，
    * 否则 C++ 代理会把本地路径当远端打开，返回 502。
    */
   static needsRangeProxy(playUrl: string, source?: MediaSource): boolean {

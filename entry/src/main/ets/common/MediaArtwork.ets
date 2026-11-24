@@ -36,6 +36,7 @@ export class MediaArtwork {
 
   /** Resolves bespoke vector SVG icon for NAS / cloud presets and saved sources. */
   static sourceIcon(src: MediaSource): Resource {
+    if (src.type === 'local') return $r('app.media.ic_protocol_local');
     if (src.type === 'alist') return $r('app.media.ic_cloud_alist');
     if (src.type === 'smb') return $r('app.media.ic_protocol_smb');
     if (src.type === 'plex') return $r('app.media.ic_protocol_plex');
@@ -52,6 +53,7 @@ export class MediaArtwork {
   }
 
   static sourceBadgeLabel(src: MediaSource): string {
+    if (src.type === 'local') return '本机存储';
     if (src.type === 'alist') return 'ALIST 302';
     if (src.type === 'smb') return 'SMB2/3';
     if (src.type === 's3') return 'S3 对象存储';
@@ -83,8 +85,26 @@ export class MediaArtwork {
   static fileEntryIcon(entry: RemoteFileEntry): Resource {
     if (entry.isDirectory) return $r('app.media.ic_file_folder');
     if (entry.isVideo) return $r('app.media.ic_file_video');
+    if (entry.isAudio) return $r('app.media.ic_file_audio');
     if (entry.isSubtitle) return $r('app.media.ic_file_subtitle');
     if (entry.name.toLowerCase().endsWith('.nfo')) return $r('app.media.ic_file_nfo');
     return $r('app.media.ic_file_doc');
+  }
+
+  /** 片源卡片副标题：本机存储展示可读目录名，其余展示连接地址。 */
+  static sourceSubtitle(src: MediaSource): string {
+    const root = src.rootPath || '';
+    if (src.type === 'local') {
+      if (!root) return '未选择文件夹';
+      let decoded = root;
+      try {
+        decoded = decodeURIComponent(root);
+      } catch (_e) {
+        // 路径里有非法百分号编码时保留原样
+      }
+      const parts = decoded.replace(/\/+$/, '').split('/').filter(p => p.length > 0);
+      return parts.length > 0 ? `…/${parts[parts.length - 1]}` : decoded;
+    }
+    return `${src.baseUrl}${root && root !== '/' ? root : ''}`;
   }
 }

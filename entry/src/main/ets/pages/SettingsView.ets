@@ -40,14 +40,13 @@ export struct SettingsView {
       const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
       const usage = await LocalStorageUsage.collect(ctx);
       this.storageUsage.appBytes = usage.appBytes;
-      this.storageUsage.offlineBytes = usage.offlineBytes;
       this.storageUsage.cacheBytes = usage.cacheBytes;
       this.storageUsage.freeBytes = usage.freeBytes;
       this.storageUsage.totalBytes = usage.totalBytes;
       this.storageLoaded = true;
       hilog.info(0x0001, 'PrismStorage',
-        'usage app=%{public}d offline=%{public}d cache=%{public}d free=%{public}d total=%{public}d',
-        usage.appBytes, usage.offlineBytes, usage.cacheBytes, usage.freeBytes, usage.totalBytes);
+        'usage app=%{public}d cache=%{public}d free=%{public}d total=%{public}d',
+        usage.appBytes, usage.cacheBytes, usage.freeBytes, usage.totalBytes);
     } catch (e) {
       this.storageLoaded = false;
       hilog.error(0x0001, 'PrismStorage', 'refresh failed: %{public}s',
@@ -56,26 +55,14 @@ export struct SettingsView {
   }
 
   private canClearStorage(): boolean {
-    return this.storageLoaded &&
-      (this.storageUsage.offlineBytes > 0 || this.storageUsage.cacheBytes > 0);
+    return this.storageLoaded && this.storageUsage.cacheBytes > 0;
   }
 
   private confirmClearStorage(): void {
     const u = this.storageUsage;
-    const hasOffline = u.offlineBytes > 0;
-    const parts: string[] = [];
-    if (hasOffline) {
-      parts.push(`${Formatters.formatBytes(u.offlineBytes)} 离线视频`);
-    }
-    if (u.cacheBytes > 0) {
-      parts.push(`${Formatters.formatBytes(u.cacheBytes)} 缓存`);
-    }
-    const tail = hasOffline
-      ? '，已保存的条目会从影库移除；重新扫描片源可恢复。'
-      : '。';
     this.getUIContext().showAlertDialog({
-      title: hasOffline ? '清空离线影库与缓存' : '清空缓存',
-      message: `将删除 ${parts.join(' 与 ')}${tail}`,
+      title: '清空缓存',
+      message: `将删除 ${Formatters.formatBytes(u.cacheBytes)} 缓存（封面、字幕、分享图），不影响影库和本机文件。`,
       primaryButton: {
         value: '取消',
         action: () => {}
@@ -92,7 +79,7 @@ export struct SettingsView {
 
   private async clearStorage(): Promise<void> {
     try {
-      const freed = await this.store.clearLocalStorage();
+      const freed = await this.store.clearCache();
       await this.refreshStorageUsage();
       promptAction.showToast({ message: `已清空，释放 ${Formatters.formatBytes(freed)}` });
     } catch (e) {
@@ -210,9 +197,10 @@ export struct SettingsView {
           .maxLines(1)
       }
 
-      SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(14)
-        .fontColor([$r('app.color.text_muted')])
+      Image($r('app.media.ic_chevron_right'))
+        .width(16)
+        .height(16)
+        .fillColor($r('app.color.text_muted'))
     }
     .width('100%')
     .padding({ left: 14, right: 14, top: 12, bottom: 12 })
@@ -245,9 +233,10 @@ export struct SettingsView {
           .maxLines(1)
       }
 
-      SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(14)
-        .fontColor([$r('app.color.text_muted')])
+      Image($r('app.media.ic_chevron_right'))
+        .width(16)
+        .height(16)
+        .fillColor($r('app.color.text_muted'))
     }
     .width('100%')
     .padding({ left: 14, right: 14, top: 12, bottom: 12 })
@@ -428,20 +417,6 @@ export struct SettingsView {
             .width('100%')
             .padding({ left: 14, right: 14, top: 12, bottom: 12 })
 
-            Divider().color($r('app.color.divider')).margin({ left: 14, right: 14 })
-
-            Row({ space: 12 }) {
-              Text('离线影库')
-                .fontSize(15)
-                .fontColor($r('app.color.text_primary'))
-                .layoutWeight(1)
-              Text(this.storageLoaded ? Formatters.formatBytes(this.storageUsage.offlineBytes) : '—')
-                .fontSize(13)
-                .fontColor($r('app.color.text_body_muted'))
-                .maxLines(1)
-            }
-            .width('100%')
-            .padding({ left: 14, right: 14, top: 12, bottom: 12 })
 
             Divider().color($r('app.color.divider')).margin({ left: 14, right: 14 })
 

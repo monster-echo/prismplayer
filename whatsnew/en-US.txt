@@ -1,8 +1,6 @@
-Version 1.0.4
-- Share a link from any app and PrismPlayer opens it directly
-- Import local videos by folder, with auto artwork and access that survives restarts
-- Continue Watching widget now shows posters and refreshes as soon as an episode ends
-- Decoder choice follows your device's hardware codecs, so MKV can stay hardware-decoded
-- Live bandwidth check warns before playback stalls
-- Fixes: saved videos failing to open, share sheet not appearing
-- Renamed to Prism Player
+Version 1.0.5
+- Local videos and music are indexed and read in place, never copied
+- Music now appears in All; albums merge across local and NAS sources
+- Play all movies, see 1/N, jump to the next title or open the queue
+- Local video posters and embedded audio covers are generated automatically
+- Fixes: playback error actions, stale Continue Watching entries, encoded local paths

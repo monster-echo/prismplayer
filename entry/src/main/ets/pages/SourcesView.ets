@@ -40,6 +40,28 @@ export struct SourcesView {
     this.probingSourceId = '';
   }
 
+  private confirmClearLocal(): void {
+    this.getUIContext().showAlertDialog({
+      title: '清空本机影库条目',
+      message: '只清理索引与观看记录，不会删除本机文件；重新扫描即可恢复。',
+      primaryButton: { value: '取消', action: () => {} },
+      secondaryButton: {
+        value: '清空',
+        fontColor: $r('app.color.danger'),
+        action: () => { this.store.clearLocalLibrary(); }
+      }
+    });
+  }
+
+  /** 本机片源还没选目录时，「浏览」先引导选文件夹，避免打开空目录。 */
+  private openOrPickFolder(src: MediaSource): void {
+    if (src.type === 'local' && !src.rootPath) {
+      this.store.importLocalFolder();
+      return;
+    }
+    this.onBrowseSource(src);
+  }
+
   private confirmDeleteSource(src: MediaSource): void {
     this.getUIContext().showAlertDialog({
       title: `移除片源「${src.name}」`,
@@ -100,11 +122,11 @@ export struct SourcesView {
               }
             },
             {
-              value: '导入本机视频',
+              value: '导入本机视频 / 音乐',
               action: () => { this.store.importLocalVideos(); }
             },
             {
-              value: '导入本机文件夹',
+              value: '添加本机文件夹',
               action: () => { this.store.importLocalFolder(); }
             }
           ], appMenuOptions())
@@ -146,22 +168,34 @@ export struct SourcesView {
               .fontSize(16)
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_primary'))
-            Text('群晖 · 飞牛 · 威联通 · Alist · Plex · Emby · SMB')
+            Text('群晖 · 飞牛 · 威联通 · Alist · Plex · SMB · 本机存储')
               .fontSize(12)
               .fontColor($r('app.color.text_body_muted'))
               .textAlign(TextAlign.Center)
 
-            Button() {
-              Row({ space: 6 }) {
-                SymbolGlyph($r('sys.symbol.plus')).fontSize(14).fontColor([Color.White])
-                Text('连接 NAS / Alist').fontSize(13).fontWeight(FontWeight.Bold).fontColor(Color.White)
+            Row({ space: 10 }) {
+              Button() {
+                Row({ space: 6 }) {
+                  SymbolGlyph($r('sys.symbol.plus')).fontSize(14).fontColor([Color.White])
+                  Text('连接 NAS / Alist').fontSize(13).fontWeight(FontWeight.Bold).fontColor(Color.White)
+                }
               }
+              .height(40)
+              .padding({ left: 18, right: 18 })
+              .backgroundColor($r('app.color.accent_blue'))
+              .borderRadius(10)
+              .onClick(() => this.onOpenEditor(null))
+
+              Button('添加本机文件夹')
+                .height(40)
+                .padding({ left: 16, right: 16 })
+                .fontSize(13)
+                .fontColor($r('app.color.text_primary'))
+                .backgroundColor($r('app.color.bg_secondary'))
+                .borderRadius(10)
+                .border({ width: 0.7, color: $r('app.color.fill_strong') })
+                .onClick(() => { this.store.importLocalFolder(); })
             }
-            .height(40)
-            .padding({ left: 18, right: 18 })
-            .backgroundColor($r('app.color.accent_blue'))
-            .borderRadius(10)
-            .onClick(() => this.onOpenEditor(null))
           }
           .width('100%')
           .constraintSize({ maxWidth: 640 })
@@ -205,7 +239,7 @@ export struct SourcesView {
                         .borderRadius(5)
                         .backgroundColor('#2238BDF8')
                     }
-                    Text(`${src.baseUrl}${src.rootPath && src.rootPath !== '/' ? src.rootPath : ''}`)
+                    Text(MediaArtwork.sourceSubtitle(src))
                       .fontSize(12)
                       .fontColor($r('app.color.text_body_muted'))
                       .maxLines(1)
@@ -213,7 +247,9 @@ export struct SourcesView {
                     Text(
                       this.probeStatusMap[src.id]
                         ? this.probeStatusMap[src.id]
-                        : `${this.store.sourceItemCount(src.id)} 项 · ${src.lastScannedAt > 0 ? '已同步' : '未扫描'}`
+                        : (src.type === 'local' && !src.rootPath
+                          ? '支持视频 / 音乐 / 字幕'
+                          : `${this.store.sourceItemCount(src.id)} 项 · ${src.lastScannedAt > 0 ? (src.type === 'local' ? '已索引' : '已同步') : '未扫描'}`)
                     )
                       .fontSize(11)
                       .fontColor(
@@ -227,38 +263,41 @@ export struct SourcesView {
                   .layoutWeight(1)
                   .alignItems(HorizontalAlign.Start)
 
-                  SymbolGlyph($r('sys.symbol.chevron_right'))
-                    .fontSize(15)
-                    .fontColor([$r('app.color.text_muted')])
+                  Image($r('app.media.ic_chevron_right'))
+                    .width(16)
+                    .height(16)
+                    .fillColor($r('app.color.text_muted'))
                 }
                 .width('100%')
-                .onClick(() => this.onBrowseSource(src))
+                .onClick(() => this.openOrPickFolder(src))
 
                 Row({ space: 8 }) {
                   Button() {
                     Row({ space: 5 }) {
                       SymbolGlyph($r('sys.symbol.folder_fill')).fontSize(13).fontColor([Color.White])
-                      Text('浏览').fontSize(12).fontColor(Color.White)
+                      Text(src.type === 'local' && !src.rootPath ? '选文件夹' : '浏览').fontSize(12).fontColor(Color.White)
                     }
                   }
                   .height(34)
                   .padding({ left: 13, right: 14 })
                   .backgroundColor($r('app.color.accent_blue'))
                   .borderRadius(8)
-                  .onClick(() => this.onBrowseSource(src))
+                  .onClick(() => this.openOrPickFolder(src))
 
-                  Button() {
-                    Row({ space: 5 }) {
-                      SymbolGlyph($r('sys.symbol.arrow_clockwise')).fontSize(13).fontColor([$r('app.color.text_primary')])
-                      Text(this.store.isScanning ? '扫描中...' : '扫描').fontSize(12).fontColor($r('app.color.text_primary'))
+                  if (!(src.type === 'local' && !src.rootPath)) {
+                    Button() {
+                      Row({ space: 5 }) {
+                        SymbolGlyph($r('sys.symbol.arrow_clockwise')).fontSize(13).fontColor([$r('app.color.text_primary')])
+                        Text(this.store.isScanning ? '扫描中...' : '扫描').fontSize(12).fontColor($r('app.color.text_primary'))
+                      }
                     }
+                    .height(34)
+                    .padding({ left: 12, right: 14 })
+                    .backgroundColor($r('app.color.bg_secondary'))
+                    .borderRadius(8)
+                    .enabled(!this.store.isScanning)
+                    .onClick(() => { this.store.scanSource(src); })
                   }
-                  .height(34)
-                  .padding({ left: 12, right: 14 })
-                  .backgroundColor($r('app.color.bg_secondary'))
-                  .borderRadius(8)
-                  .enabled(!this.store.isScanning)
-                  .onClick(() => { this.store.scanSource(src); })
 
                   Blank()
 
@@ -271,7 +310,24 @@ export struct SourcesView {
                   .width(34)
                   .height(34)
                   .backgroundColor($r('app.color.bg_secondary'))
-                  .bindMenu([
+                  .bindMenu(src.type === 'local' ? [
+                    {
+                      value: '更换本机文件夹',
+                      action: () => { this.store.importLocalFolder(); }
+                    },
+                    {
+                      value: this.probingSourceId === src.id ? '检测中...' : '检测授权是否有效',
+                      action: () => { this.runQuickProbe(src); }
+                    },
+                    {
+                      value: '清理本机影库索引',
+                      action: () => { this.store.clearSourceIndex(src.id); }
+                    },
+                    {
+                      value: '清空本机影库条目',
+                      action: () => this.confirmClearLocal()
+                    }
+                  ] : [
                     {
                       value: this.probingSourceId === src.id ? '测速中...' : '测试连通性与延迟',
                       action: () => { this.runQuickProbe(src); }

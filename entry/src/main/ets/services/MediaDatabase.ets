@@ -5,6 +5,7 @@ import {
   AppSettings,
   HiddenFolderRule,
   MediaItem,
+  MediaKind,
   MediaSource,
   MediaSourceType,
   ProTier,
@@ -85,6 +86,9 @@ export class MediaDatabase {
         subtitle_url TEXT NOT NULL DEFAULT '',
         subtitle_tracks_json TEXT NOT NULL DEFAULT '[]',
         is_favorite INTEGER NOT NULL DEFAULT 0,
+        artist TEXT NOT NULL DEFAULT '',
+        album TEXT NOT NULL DEFAULT '',
+        track_no INTEGER NOT NULL DEFAULT 0,
         added_at INTEGER NOT NULL
       )
     `);
@@ -95,6 +99,21 @@ export class MediaDatabase {
     }
     try {
       await this.rdb.executeSql(`ALTER TABLE media_items ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0`);
+    } catch (_e) {
+      // Column already exists
+    }
+    try {
+      await this.rdb.executeSql(`ALTER TABLE media_items ADD COLUMN artist TEXT NOT NULL DEFAULT ''`);
+    } catch (_e) {
+      // Column already exists
+    }
+    try {
+      await this.rdb.executeSql(`ALTER TABLE media_items ADD COLUMN album TEXT NOT NULL DEFAULT ''`);
+    } catch (_e) {
+      // Column already exists
+    }
+    try {
+      await this.rdb.executeSql(`ALTER TABLE media_items ADD COLUMN track_no INTEGER NOT NULL DEFAULT 0`);
     } catch (_e) {
       // Column already exists
     }
@@ -363,7 +382,7 @@ export class MediaDatabase {
           streamUrl: rs.getString(rs.getColumnIndex('stream_url')),
           fileName: rs.getString(rs.getColumnIndex('file_name')),
           fileSize: rs.getLong(rs.getColumnIndex('file_size')),
-          mediaType: rs.getString(rs.getColumnIndex('media_type')) === 'episode' ? 'episode' : 'movie',
+          mediaType: this.parseMediaKind(rs.getString(rs.getColumnIndex('media_type'))),
           seriesKey: rs.getString(rs.getColumnIndex('series_key')),
           seriesTitle: rs.getString(rs.getColumnIndex('series_title')),
           seasonNo: rs.getLong(rs.getColumnIndex('season_no')),
@@ -381,6 +400,9 @@ export class MediaDatabase {
           subtitleUrl: rs.getString(rs.getColumnIndex('subtitle_url')),
           subtitleTracks: this.parseSubTracks(rs.getString(rs.getColumnIndex('subtitle_tracks_json'))),
           isFavorite: rs.getLong(rs.getColumnIndex('is_favorite')) === 1,
+          artist: rs.getString(rs.getColumnIndex('artist')),
+          album: rs.getString(rs.getColumnIndex('album')),
+          trackNo: rs.getLong(rs.getColumnIndex('track_no')),
           addedAt: rs.getLong(rs.getColumnIndex('added_at'))
         });
       }
@@ -388,6 +410,12 @@ export class MediaDatabase {
       rs.close();
     }
     return out;
+  }
+
+  private parseMediaKind(raw: string): MediaKind {
+    if (raw === 'episode') return 'episode';
+    if (raw === 'track') return 'track';
+    return 'movie';
   }
 
   private parseSubTracks(raw: string): SubtitleTrackOption[] {
@@ -430,6 +458,9 @@ export class MediaDatabase {
         subtitle_url: it.subtitleUrl,
         subtitle_tracks_json: JSON.stringify(it.subtitleTracks || []),
         is_favorite: it.isFavorite ? 1 : 0,
+        artist: it.artist || '',
+        album: it.album || '',
+        track_no: it.trackNo || 0,
         added_at: it.addedAt
       };
       await this.rdb.insert('media_items', bucket, relationalStore.ConflictResolution.ON_CONFLICT_REPLACE);
@@ -501,7 +532,7 @@ export class MediaDatabase {
     await this.rdb.delete(pred);
   }
 
-  /** 批量删除媒体条目（清空离线影库时用）；分批避免 SQL 变量数上限 */
+  /** 批量删除媒体条目；分批避免 SQL 变量数上限 */
   async deleteMediaItems(ids: string[]): Promise<void> {
     if (!this.rdb || ids.length === 0) return;
     for (let i = 0; i < ids.length; i += 500) {

@@ -1,5 +1,5 @@
 import { AppConstants } from './Constants';
-import { DecodeRoutingDecision, MediaItem, ParsedFilenameInfo, RemoteFileEntry, SubtitleTrackOption } from './Types';
+import { DecodeRoutingDecision, MediaItem, ParsedFilenameInfo, ParsedTrackInfo, RemoteFileEntry, SubtitleTrackOption } from './Types';
 
 export class Formatters {
   static formatDuration(ms: number): string {
@@ -57,6 +57,76 @@ export class Formatters {
 
   static isVideoFile(fileName: string): boolean {
     return Formatters.hasExtension(fileName, AppConstants.VIDEO_EXTENSIONS);
+  }
+
+  static isAudioFile(fileName: string): boolean {
+    return Formatters.hasExtension(fileName, AppConstants.AUDIO_EXTENSIONS);
+  }
+
+  static isImageFile(fileName: string): boolean {
+    return Formatters.hasExtension(fileName, AppConstants.IMAGE_EXTENSIONS);
+  }
+
+  /** 目录名里这些片段只说明「这是本机/网盘根路径」，不能当歌手或专辑名。 */
+  private static readonly GENERIC_DIR_SEGMENTS: string[] = [
+    'music', '音乐', 'audio', '音频', 'download', 'downloads', '下载', '本地', 'local',
+    'storage', 'emulated', 'sdcard', 'docs', 'data', 'mnt', 'users', 'currentuser',
+    'volume', 'volumes', 'shared', 'public', 'media', '0', '1'
+  ];
+
+  private static dirSegments(pathOrDir: string): string[] {
+    let p = (pathOrDir || '').split('?')[0].split('#')[0];
+    const schemeIdx = p.indexOf('://');
+    if (schemeIdx >= 0) p = p.substring(schemeIdx + 3);
+    const raw = p.split('/');
+    const out: string[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      const seg = raw[i].trim();
+      if (seg.length === 0 || seg === '.' || seg === '..') continue;
+      out.push(seg);
+    }
+    return out;
+  }
+
+  /**
+   * 音频文件名 / 目录 → 曲名、歌手、专辑、曲序。
+   *
+   * 媒体内嵌标签优先（调用方覆盖），这里只做兜底推断：
+   *   `Music/周杰伦/范特西/01 以父之名.flac` → 周杰伦 / 范特西 / 01
+   *   `Artist - Title.mp3`                   → Artist / Title
+   */
+  static parseTrackInfo(fileName: string, pathOrDir: string = ''): ParsedTrackInfo {
+    const base = Formatters.stripExtension(fileName || '').trim();
+    let rest = base;
+    let trackNo = 0;
+    const numMatch = base.match(/^(\d{1,3})[\s._\-]+(.+)$/);
+    if (numMatch) {
+      trackNo = parseInt(numMatch[1], 10);
+      rest = numMatch[2].trim();
+    }
+
+    let artist = '';
+    let title = rest;
+    const dashParts = rest.split(/\s+[-–—]\s+/);
+    if (dashParts.length >= 2 && dashParts[0].trim().length > 0 && dashParts[0].trim().length <= 40) {
+      artist = dashParts[0].trim();
+      title = dashParts.slice(1).join(' - ').trim();
+    }
+
+    const dirs = Formatters.dirSegments(pathOrDir);
+    const meaningful: string[] = [];
+    for (let i = dirs.length - 1; i >= 0 && meaningful.length < 2; i--) {
+      const seg = dirs[i];
+      if (Formatters.GENERIC_DIR_SEGMENTS.indexOf(seg.toLowerCase()) >= 0) continue;
+      if (/^\d+$/.test(seg)) continue;
+      meaningful.push(seg);
+    }
+    const album = meaningful.length > 0 ? meaningful[0] : '';
+    const folderArtist = meaningful.length > 1 ? meaningful[1] : '';
+
+    if (!artist) artist = folderArtist;
+    if (!title) title = base;
+    return { title, artist, album, trackNo };
   }
 
 

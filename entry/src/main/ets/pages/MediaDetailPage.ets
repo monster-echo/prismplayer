@@ -443,9 +443,11 @@ struct MediaDetailPage {
                   Text(this.getSource(this.movie.sourceId)?.name || '本地媒体库')
                     .fontSize(12)
                     .fontColor($r('app.color.text_body_muted'))
-                  SymbolGlyph(this.showTechInfo ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
-                    .fontSize(13)
-                    .fontColor([$r('app.color.text_muted')])
+                  Image($r('app.media.ic_chevron_right'))
+                    .width(16)
+                    .height(16)
+                    .fillColor($r('app.color.text_muted'))
+                    .rotate({ angle: this.showTechInfo ? 90 : 0 })
                 }
                 .width('100%')
                 .onClick(() => { this.showTechInfo = !this.showTechInfo; })
@@ -455,7 +457,11 @@ struct MediaDetailPage {
                   this.techRow('文件名', this.movie.fileName)
                   this.techRow('片源位置', this.getSource(this.movie.sourceId)?.name || '本地媒体库')
                   if (this.movie.remotePath) {
-                    this.techRow('远程路径', this.movie.remotePath)
+                    if (this.isLocalItem()) {
+                      this.techRow('本地路径', this.localPathLabel())
+                    } else {
+                      this.techRow('远程路径', this.movie.remotePath)
+                    }
                   }
                   if (this.movie.fileSize > 0) {
                     this.techRow('体积大小', Formatters.formatBytes(this.movie.fileSize))
@@ -692,9 +698,10 @@ struct MediaDetailPage {
                 .layoutWeight(1)
                 .alignItems(HorizontalAlign.Start)
 
-                SymbolGlyph($r('sys.symbol.chevron_right'))
-                  .fontSize(13)
-                  .fontColor([$r('app.color.text_muted')])
+                Image($r('app.media.ic_chevron_right'))
+                  .width(16)
+                  .height(16)
+                  .fillColor($r('app.color.text_muted'))
               }
               .width('100%')
               .padding(8)
@@ -788,6 +795,29 @@ struct MediaDetailPage {
         }
       }
     });
+  }
+
+  private isLocalItem(): boolean {
+    const it = this.movie;
+    if (!it) return false;
+    return it.sourceType === 'local' || it.streamUrl.startsWith('file://docs') ||
+      it.remotePath.startsWith('file://docs') || it.streamUrl.startsWith('/');
+  }
+
+  /** 本机文件只给用户看认得的那一段，不展示编码后的 file://docs URI。 */
+  private localPathLabel(): string {
+    const it = this.movie;
+    if (!it) return '';
+    let path = it.remotePath || it.streamUrl;
+    try {
+      path = decodeURIComponent(path);
+    } catch (_e) {
+      // 保留原串
+    }
+    path = path.replace(/^file:\/\/docs\/storage\/Users\/currentUser\//, '');
+    path = path.replace(/^file:\/\/docs\//, '');
+    path = path.replace(/^file:\/\//, '');
+    return path;
   }
 
   @Builder

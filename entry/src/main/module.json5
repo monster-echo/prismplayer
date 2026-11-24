@@ -26,6 +26,10 @@
         "name": "ohos.permission.GET_NETWORK_INFO"
       },
       {
+        // 音乐后台播放：进入后台继续出声，并把播控交给 AVSession
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
+      },
+      {
         // 应用接续（跨端迁移播放现场）依赖该权限；用户在首次点击「在其它设备继续」时才被请求
         "name": "ohos.permission.DISTRIBUTED_DATASYNC",
         "reason": "$string:reason_distributed_datasync",
@@ -57,6 +61,10 @@
           "split",
           "floating"
         ],
+        // 音乐播放：允许音频在后台继续播放（配合 AVSession 播控）
+        "backgroundModes": [
+          "audioPlayback"
+        ],
         "metadata": [
           {
             "name": "ohos.ability.shortcuts",
@@ -84,6 +92,14 @@
               {
                 "scheme": "content",
                 "type": "video/*"
+              },
+              {
+                "scheme": "file",
+                "type": "audio/*"
+              },
+              {
+                "scheme": "content",
+                "type": "audio/*"
               }
             ]
           },

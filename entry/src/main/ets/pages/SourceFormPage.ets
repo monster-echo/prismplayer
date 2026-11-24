@@ -511,9 +511,11 @@ struct SourceFormPage {
                       .fontColor($r('app.color.text_body_muted'))
                     }.layoutWeight(1).alignItems(HorizontalAlign.Start)
 
-                    SymbolGlyph(this.showAdvanced ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
-                    .fontSize(14)
-                    .fontColor([$r('app.color.text_muted')])
+                    Image($r('app.media.ic_chevron_right'))
+                      .width(16)
+                      .height(16)
+                      .fillColor($r('app.color.text_muted'))
+                      .rotate({ angle: this.showAdvanced ? 90 : 0 })
                   }
                   .width('100%')
                   .onClick(() => { this.showAdvanced = !this.showAdvanced; })

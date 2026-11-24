@@ -226,7 +226,7 @@ struct OnlineMediaPage {
       if (platform === 'bilibili') {
         item = this.buildBilibiliItem(await BilibiliClient.resolveShareLink(text));
       } else if (platform === 'douyin') {
-        item = await this.store.resolveDouyinShareAndImport(text, false);
+        item = await this.store.resolveDouyinShareAndImport(text);
       } else if (platform === 'youtube') {
         item = this.buildYouTubeItem(await YouTubeClient.resolvePlayableStream(text));
       } else {

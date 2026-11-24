@@ -39,6 +39,7 @@ import { SubtitleTracksPage } from '../components/subtitle/SubtitleTracksPage';
 import { computePictureRect, PictureRect } from '../common/VideoLayout';
 import { AppStore } from '../services/AppStore';
 import { AVSessionService } from '../services/AVSessionService';
+import { MusicPlayerService } from '../services/MusicPlayerService';
 import { BurnSubDetector } from '../services/BurnSubDetector';
 import { CodecCapability } from '../services/CodecCapability';
 import { ContinuePermission } from '../services/ContinuePermission';
@@ -143,9 +144,9 @@ struct PlayerPage {
   private lowScoreStreak: number = 0;
   /** 滚动窗口 [时刻ms, 累计字节]，用于算 30s 平均吞吐 */
   private netSamples: Array<[number, number]> = [];
-  @Local videoSavedLocal: boolean = false;
-  @Local savingVideo: boolean = false;
   @Local isFavorite: boolean = false;
+  @Local playlist: MediaItem[] = [];
+  @Local showQueue: boolean = false;
 
   @Local subtitle: SubtitleSession = SubtitleSession.getInstance();
 
@@ -188,14 +189,24 @@ struct PlayerPage {
     this.skipOutroSec = this.store.settings.autoSkipOutroSec;
     this.introSkipped = false;
     this.enteredInPortrait = !this.store.isLandscape;
+    // 视频与音乐互斥：起播视频前先停掉音乐，避免两路声音叠在一起
+    MusicPlayerService.getInstance().pause(false);
+
     const rawParams = this.getUIContext().getRouter().getParams() as PlayerLaunchParams | undefined;
     if (rawParams && rawParams.item) {
+      if (rawParams.item.mediaType === 'track') {
+        this.getUIContext().getRouter().replaceUrl({
+          url: 'pages/MusicPlayerPage',
+          params: { item: rawParams.item, queue: [rawParams.item] }
+        });
+        return;
+      }
       this.mediaItem = rawParams.item;
       this.mediaSource = rawParams.source;
       this.startPosMs = rawParams.startPositionMs || 0;
       this.durationMs = rawParams.item.durationMs || 0;
-      this.videoSavedLocal = rawParams.item.streamUrl.startsWith('/') || rawParams.item.streamUrl.startsWith('file://');
       this.isFavorite = rawParams.item.isFavorite === true;
+      this.playlist = rawParams.playlist && rawParams.playlist.length > 0 ? rawParams.playlist : [];
     }
     if (this.mediaItem) {
       const codecMime: string = CodecCapability.hintMime(this.mediaItem);
@@ -370,34 +381,6 @@ struct PlayerPage {
       // Ignore
     }
     this.showBriefToast(this.isFullscreen ? '已切换横屏全屏' : '已退出全屏');
-  }
-
-  private async saveCurrentVideoOffline(exportToPicker: boolean): Promise<void> {
-    if (!this.mediaItem || this.savingVideo) return;
-    this.savingVideo = true;
-    const expectedBytes = this.mediaItem.fileSize;
-    hilog.info(0x0001, 'PrismPlay', 'save offline start export=%{public}s bytes=%{public}d',
-      exportToPicker ? 'yes' : 'no', expectedBytes);
-    this.toastText = exportToPicker ? '正在另存视频...' : '正在下载并保存视频至本地...';
-    try {
-      const res = await this.store.saveMediaItemOffline(this.mediaItem, this.mediaSource, exportToPicker,
-        (received: number) => {
-          if (expectedBytes > 0) {
-            const pct = Math.min(99, Math.floor(received * 100 / expectedBytes));
-            this.toastText = `保存中 ${pct}%`;
-          } else {
-            this.toastText = `保存中 ${Formatters.formatBytes(received)}`;
-          }
-        });
-      if (res.ok && res.offline) {
-        this.videoSavedLocal = true;
-      }
-      this.showBriefToast(res.message);
-    } catch (e) {
-      this.showBriefToast(`保存失败：${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      this.savingVideo = false;
-    }
   }
 
   private showBriefToast(msg: string): void {
@@ -683,7 +666,7 @@ struct PlayerPage {
     }
     ijk.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, 'timeout', '10000000');
 
-    // 离线影库保存的是沙箱绝对路径；FFmpeg 只认 file:// URI，直接传路径会报 -10000
+    // 本机源给的是绝对路径；FFmpeg 只认 file:// URI，直接传路径会报 -10000
     ijk.setDataSource(resolved.url.startsWith('/') ? `file://${resolved.url}` : resolved.url);
 
     const onPrepared: OnPreparedListener = {
@@ -1083,12 +1066,56 @@ struct PlayerPage {
 
   private onPlaybackCompleted(): void {
     this.syncLivePlayback();
+    if (this.playNextInPlaylist()) return;
     try {
       const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
       if (ctx) ReviewPrompt.onPlaybackFinished(this.store, ctx).catch(() => {});
     } catch (_e) {
       // Ignore
     }
+  }
+
+  private playlistIndex(): number {
+    if (!this.mediaItem) return -1;
+    return this.playlist.findIndex((it: MediaItem) => it.id === this.mediaItem!.id);
+  }
+
+  private nextInPlaylist(): MediaItem | null {
+    const idx = this.playlistIndex();
+    return idx >= 0 && idx < this.playlist.length - 1 ? this.playlist[idx + 1] : null;
+  }
+
+  /** 列表播放：播完自动换下一条，复用同一页路由，不叠页面。 */
+  private playNextInPlaylist(): boolean {
+    const next = this.nextInPlaylist();
+    if (!next) return false;
+    const src = this.store.sources.find((s) => s.id === next.sourceId);
+    this.getUIContext().getRouter().replaceUrl({
+      url: 'pages/PlayerPage',
+      params: {
+        item: next,
+        source: src,
+        startPositionMs: 0,
+        playlist: this.playlist
+      } as PlayerLaunchParams
+    });
+    return true;
+  }
+
+  private jumpToPlaylist(index: number): void {
+    if (index < 0 || index >= this.playlist.length) return;
+    const target = this.playlist[index];
+    const src = this.store.sources.find((s) => s.id === target.sourceId);
+    this.showQueue = false;
+    this.getUIContext().getRouter().replaceUrl({
+      url: 'pages/PlayerPage',
+      params: {
+        item: target,
+        source: src,
+        startPositionMs: 0,
+        playlist: this.playlist
+      } as PlayerLaunchParams
+    });
   }
 
   private async shareCurrentItem(): Promise<void> {
@@ -1907,6 +1934,7 @@ struct PlayerPage {
 
           Row({ space: 10 }) {
             Button(this.engineMode === 'native_hw' ? '切换兼容模式' : '再试一次')
+              .type(ButtonType.Normal)
               .layoutWeight(1)
               .height(40)
               .fontSize(14)
@@ -1921,18 +1949,16 @@ struct PlayerPage {
                   this.startIjkEngine();
                 }
               })
-            Button() {
-              Row({ space: 5 }) {
-                SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(15).fontColor([Color.White])
-                Text('返回').fontSize(13).fontColor('#F3F4F6')
-              }
-            }
-            .height(40)
-            .padding({ left: 14, right: 16 })
-            .backgroundColor('#1B1E27')
-            .borderRadius(10)
-            .border({ width: 0.7, color: '#26FFFFFF' })
-            .onClick(() => this.getUIContext().getRouter().back())
+            Button('返回')
+              .type(ButtonType.Normal)
+              .width(104)
+              .height(40)
+              .fontSize(14)
+              .fontColor('#E5E7EB')
+              .backgroundColor('#1B1E27')
+              .borderRadius(10)
+              .border({ width: 0.7, color: '#26FFFFFF' })
+              .onClick(() => this.getUIContext().getRouter().back())
           }.width('100%')
         }
         .width('86%')
@@ -2042,16 +2068,16 @@ struct PlayerPage {
       }
 
       // Player Controls Overlay（画中画期间由系统面板接管，主窗口不再绘制）
-      if (this.showControls && !this.pipActive) {
+      if (this.showControls && !this.pipActive && !this.showQueue) {
         Column() {
           // Top Bar
           Row({ space: 10 }) {
             if (!this.screenLocked) {
               Button({ type: ButtonType.Circle }) {
-                SymbolGlyph($r('sys.symbol.chevron_left'))
-                  .fontSize(20)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor([Color.White])
+                Image($r('app.media.ic_chevron_left'))
+                  .width(16)
+                  .height(16)
+                  .fillColor(Color.White)
               }
               .width(38)
               .height(38)
@@ -2067,11 +2093,17 @@ struct PlayerPage {
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                 if (this.mediaItem && this.mediaItem.qualityTag) {
-                  Text(`${this.mediaItem.qualityTag} · ${this.engineMode === 'native_hw' ? '硬解' : 'FFmpeg'}`)
+                  Text(`${this.mediaItem.qualityTag} · ${this.engineMode === 'native_hw' ? '硬解' : 'FFmpeg'}` +
+                    (this.playlistIndex() >= 0 && this.playlist.length > 1
+                      ? ` · ${this.playlistIndex() + 1}/${this.playlist.length}`
+                      : ''))
                     .fontSize(11)
                     .fontColor('#94A3B8')
                     .maxLines(1)
                     .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .onClick(() => {
+                      if (this.playlist.length > 1) this.showQueue = true;
+                    })
                 }
               }
               .layoutWeight(1)
@@ -2122,16 +2154,14 @@ struct PlayerPage {
                   action: () => { this.enterPip(); }
                 },
                 {
+                  value: this.playlist.length > 1
+                    ? `播放队列 (${this.playlistIndex() + 1}/${this.playlist.length})`
+                    : '播放队列',
+                  action: () => { this.showQueue = this.playlist.length > 1; }
+                },
+                {
                   value: '分享这部片',
                   action: () => { this.shareCurrentItem(); }
-                },
-                {
-                  value: this.videoSavedLocal ? '已保存至离线影库（点击重存）' : '保存视频至本地离线影库',
-                  action: () => { this.saveCurrentVideoOffline(false); }
-                },
-                {
-                  value: '另存视频文件到手机 / 电脑目录',
-                  action: () => { this.saveCurrentVideoOffline(true); }
                 },
                 {
                   value: this.engineMode === 'native_hw' ? '切换至 FFmpeg 兼容解码' : '切换至系统硬解内核',
@@ -2183,6 +2213,27 @@ struct PlayerPage {
                     .borderRadius(16)
                     .border({ width: 0.6, color: '#33FFFFFF' })
                     .onClick(() => this.seekTo(Math.max(0, this.durationMs - 400)))
+                }
+                .width('100%')
+              }
+
+              if (this.nextInPlaylist() !== null) {
+                Row() {
+                  Blank()
+                  Row() {
+                    Text(`下一部 · ${this.nextInPlaylist()!.title}`)
+                      .fontSize(11)
+                      .fontColor(Color.White)
+                      .maxLines(1)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  }
+                  .height(30)
+                  .padding({ left: 12, right: 12 })
+                  .borderRadius(15)
+                  .backgroundColor('#66191D2A')
+                  .border({ width: 0.6, color: '#33FFFFFF' })
+                  .constraintSize({ maxWidth: '68%' })
+                  .onClick(() => { this.playNextInPlaylist(); })
                 }
                 .width('100%')
               }
@@ -2310,6 +2361,77 @@ struct PlayerPage {
         .width('100%')
         .height('100%')
         .hitTestBehavior(HitTestMode.Transparent)
+      }
+
+      // 播放队列：电影列表播放的完整列表，点任意一条跳播
+      if (this.showQueue && this.playlist.length > 1) {
+        Column() {
+          Column({ space: 10 }) {
+            Row() {
+              Text(`播放队列 · ${this.playlist.length} 部`)
+                .fontSize(15)
+                .fontWeight(FontWeight.Bold)
+                .fontColor('#F3F4F6')
+              Blank()
+              Button({ type: ButtonType.Circle }) {
+                SymbolGlyph($r('sys.symbol.xmark')).fontSize(14).fontColor(['#C7CBD3'])
+              }
+              .width(30)
+              .height(30)
+              .backgroundColor('#1B1E27')
+              .onClick(() => { this.showQueue = false; })
+            }
+            .width('100%')
+
+            List({ space: 4 }) {
+              ForEach(this.playlist, (it: MediaItem, idx: number) => {
+                ListItem() {
+                  Row({ space: 10 }) {
+                    Text(`${idx + 1}`)
+                      .fontSize(12)
+                      .fontColor(idx === this.playlistIndex() ? '#60A5FA' : '#6B7280')
+                      .width(22)
+                    Column({ space: 2 }) {
+                      Text(it.title)
+                        .fontSize(13)
+                        .fontColor('#F3F4F6')
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      Text(Formatters.formatDuration(it.durationMs))
+                        .fontSize(10)
+                        .fontColor('#6B7280')
+                    }
+                    .layoutWeight(1)
+                    .alignItems(HorizontalAlign.Start)
+                    if (idx === this.playlistIndex()) {
+                      SymbolGlyph($r('sys.symbol.play_fill')).fontSize(13).fontColor(['#60A5FA'])
+                    }
+                  }
+                  .width('100%')
+                  .height(52)
+                  .padding({ left: 8, right: 10 })
+                  .borderRadius(10)
+                  .backgroundColor(idx === this.playlistIndex() ? '#1A3B82F6' : Color.Transparent)
+                  .onClick(() => this.jumpToPlaylist(idx))
+                }
+              }, (it: MediaItem) => it.id)
+            }
+            .width('100%')
+            .height(Math.min(this.playlist.length * 56, 320))
+            .scrollBar(BarState.Off)
+          }
+          .width('86%')
+          .constraintSize({ maxWidth: 380 })
+          .padding(16)
+          .borderRadius(18)
+          .backgroundColor('#F210131C')
+          .border({ width: 0.8, color: '#26FFFFFF' })
+        }
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#B3000000')
+        .justifyContent(FlexAlign.Center)
+        .onClick(() => { this.showQueue = false; })
       }
 
       // Floating done chip while adjusting the burned-subtitle mask band

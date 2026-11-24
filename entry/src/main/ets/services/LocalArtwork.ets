@@ -2,6 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { MediaSource, RemoteFileEntry } from '../common/Types';
+import { LocalFileClient } from './LocalFileClient';
 import { RemoteSourceClient } from './RemoteSourceClient';
 
 const LOG_TAG: string = 'PrismLocalArt';
@@ -90,6 +91,20 @@ export class LocalArtwork {
       if (fs.accessSync(file)) return `file://${file}`;
     } catch (_e) {
       // 尚未缓存
+    }
+
+    // 本机片源：图片就在授权目录里，复制进缓存即可，不用绕网络层
+    if (source.type === 'local') {
+      try {
+        if (!fs.accessSync(dir)) {
+          fs.mkdirSync(dir, true);
+        }
+        await LocalFileClient.copyInto(entry.fullUrl, file);
+        return `file://${file}`;
+      } catch (err) {
+        hilog.warn(0x0001, LOG_TAG, 'local artwork copy failed: %{public}s', JSON.stringify(err));
+        return '';
+      }
     }
 
     try {

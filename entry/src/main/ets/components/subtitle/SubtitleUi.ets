@@ -23,10 +23,10 @@ export struct SubtitlePageHeader {
     Row({ space: 10 }) {
       if (this.showBack) {
         Button({ type: ButtonType.Circle }) {
-          SymbolGlyph($r('sys.symbol.chevron_left'))
-            .fontSize(19)
-            .fontWeight(FontWeight.Medium)
-            .fontColor([Color.White])
+          Image($r('app.media.ic_chevron_left'))
+            .width(16)
+            .height(16)
+            .fillColor(Color.White)
         }
         .width(36)
         .height(36)
@@ -190,9 +190,10 @@ export struct SubtitleNavRow {
           .constraintSize({ maxWidth: 132 })
       }
 
-      SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(14)
-        .fontColor(['#6B7280'])
+      Image($r('app.media.ic_chevron_right'))
+        .width(16)
+        .height(16)
+        .fillColor('#6B7280')
     }
     .width('100%')
     .padding({ left: 12, right: 12, top: 12, bottom: 12 })

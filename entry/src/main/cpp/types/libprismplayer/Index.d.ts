@@ -83,6 +83,10 @@ export interface LocalMediaMeta {
   height: number;
   title: string;
   mimeType: string;
+  /** 音频内嵌歌手标签；无标签时为空串 */
+  artist: string;
+  /** 音频内嵌专辑标签；无标签时为空串 */
+  album: string;
 }
 
 export const startStreamProxy: (cacheBudgetMb: number) => number;

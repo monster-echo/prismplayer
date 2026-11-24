@@ -10,6 +10,7 @@ import {
   HiddenFolderRule,
   MediaItem,
   MediaSource,
+  MusicAlbum,
   PlayerLaunchParams,
   ProTier,
   RemoteFileEntry,
@@ -26,11 +27,12 @@ import { CardData, CardSnapshot, CARD_SNAPSHOT_KEY } from './CardSnapshot';
 import { CardFormData } from './CardFormData';
 import { CardPoster } from './CardPoster';
 import { LocalArtwork } from './LocalArtwork';
+import { MediaPoster } from './MediaPoster';
 import { LocalAccess } from './LocalAccess';
 import { LocalStorageUsage } from './LocalStorageUsage';
 import { ContinuePayload } from './PlaybackHandoff';
 import { CryptoVault } from './CryptoVault';
-import { DouyinClient, LocalVideoSaveResult } from './DouyinClient';
+import { DouyinClient } from './DouyinClient';
 import { EmbyClient } from './EmbyClient';
 import { IptvClient } from './IptvClient';
 import { MediaDatabase } from './MediaDatabase';
@@ -40,6 +42,17 @@ import { RemoteSourceClient } from './RemoteSourceClient';
 import { TmdbCandidate, TmdbScraper } from './TmdbScraper';
 import { WebDavClient } from './WebDavClient';
 import { YouTubeClient } from './YouTubeClient';
+
+/** 本机文件探测结果：视频只用时长/分辨率，音乐额外带内嵌标签。 */
+interface LocalProbeResult {
+  size: number;
+  durationMs: number;
+  width: number;
+  height: number;
+  title: string;
+  artist: string;
+  album: string;
+}
 
 @ObservedV2
 export class AppStore {
@@ -55,6 +68,9 @@ export class AppStore {
   private db: MediaDatabase = new MediaDatabase();
   private context: common.UIAbilityContext | null = null;
   private proxyStarted: boolean = false;
+  private posterBackfillRunning: boolean = false;
+  /** 单次扫描可做的本机元数据探测次数：每次都要开 fd，几千首音乐全探测会拖慢扫描。 */
+  private localProbeBudget: number = 0;
 
   @Trace initialized: boolean = false;
   @Trace privacyAccepted: boolean = false;
@@ -148,10 +164,15 @@ export class AppStore {
 
   private async bootstrapAfterConsent(): Promise<void> {
     this.ensureNativeProxy();
+    // 本机存储和 NAS / 网盘一样是常驻片源：先建好空壳，片源管理里永远能看到入口
+    await this.ensureLocalSource();
     await this.reloadAllData();
     // 本机视频的持久授权必须每次启动重新激活，否则条目全部打不开
     this.activateLocalPermissions().catch(() => {});
+    this.backfillLocalPosters(12).catch(() => {});
+    await this.purgeLegacyOfflineCopies();
     await this.purgeLegacyDemoLibrary();
+    await this.purgeOrphanHistory();
   }
 
   /**
@@ -165,6 +186,81 @@ export class AppStore {
     this.mediaItems = await this.db.listMediaItems();
     this.watchHistory = await this.db.listWatchHistory();
     await this.refreshCardSnapshot();
+  }
+
+  /**
+   * 旧版本会把远端片源复制到 app 沙箱（filesDir/saved_videos）。
+   * 现在只索引/读取手机上的原文件，这里清掉遗留副本和指向它们的条目，避免继续占空间。
+   */
+  private async purgeLegacyOfflineCopies(): Promise<void> {
+    if (!this.context) return;
+    const dir = `${this.context.filesDir}/saved_videos`;
+    let exists = false;
+    try {
+      exists = fs.accessSync(dir);
+    } catch (_e) {
+      exists = false;
+    }
+    if (!exists) return;
+    const ids: string[] = [];
+    for (let i = 0; i < this.mediaItems.length; i++) {
+      if (this.mediaItems[i].streamUrl.startsWith(`${dir}/`)) {
+        ids.push(this.mediaItems[i].id);
+      }
+    }
+    AppStore.removeDirContents(dir, 0);
+    try {
+      fs.rmdirSync(dir);
+    } catch (_e) {
+      // Ignore
+    }
+    if (ids.length > 0) {
+      await this.db.deleteMediaItems(ids);
+      await this.db.deleteWatchHistoryItems(ids);
+      await this.reloadAllData();
+    }
+    hilog.info(0x0001, 'PrismStorage', 'legacy offline copies purged items=%{public}d', ids.length);
+  }
+
+  /** 条目被清空/移除后，观看记录里可能留下点不开的孤儿，启动时一并清掉。 */
+  private async purgeOrphanHistory(): Promise<void> {
+    const alive = new Set<string>(this.mediaItems.map(m => m.id));
+    const orphans: string[] = [];
+    for (let i = 0; i < this.watchHistory.length; i++) {
+      if (!alive.has(this.watchHistory[i].itemId)) orphans.push(this.watchHistory[i].itemId);
+    }
+    if (orphans.length === 0) return;
+    await this.db.deleteWatchHistoryItems(orphans);
+    this.watchHistory = await this.db.listWatchHistory();
+    await this.refreshCardSnapshot();
+  }
+
+  /** 为本机条目补齐封面：失败时保持占位图，绝不影响播放。 */
+  private async backfillLocalPosters(limit: number): Promise<void> {
+    if (!this.context || this.posterBackfillRunning) return;
+    this.posterBackfillRunning = true;
+    try {
+      const pending: MediaItem[] = [];
+      for (let i = 0; i < this.mediaItems.length && pending.length < limit; i++) {
+        const it = this.mediaItems[i];
+        if (it.sourceType === 'local' && !it.posterUrl) pending.push(it);
+      }
+      if (pending.length === 0) return;
+      let changed = false;
+      for (let i = 0; i < pending.length; i++) {
+        const poster = await MediaPoster.ensure(this.context, pending[i]);
+        if (poster) {
+          pending[i].posterUrl = poster;
+          changed = true;
+        }
+      }
+      if (changed) {
+        await this.db.upsertMediaItems(pending.filter((it: MediaItem) => it.posterUrl.length > 0));
+        await this.reloadAllData();
+      }
+    } finally {
+      this.posterBackfillRunning = false;
+    }
   }
 
   ensureNativeProxy(): number {
@@ -321,7 +417,8 @@ export class AppStore {
 
   /** 把「继续观看」算好写进 preferences，卡片进程只读这一份。 */
   async refreshCardSnapshot(): Promise<void> {
-    const data: CardData = CardSnapshot.build(this.watchHistory, this.concealedIds());
+    const videoHistory = this.watchHistory.filter(h => !this.isTrackItemId(h.itemId));
+    const data: CardData = CardSnapshot.build(videoHistory, this.concealedIds());
     // 先落文字版本：这条路径在启动/每次进度保存时都会跑，不能被网络图拖住
     await this.db.setStringPref(CARD_SNAPSHOT_KEY, CardSnapshot.toJson(data));
     if (!data.hasData) return;
@@ -547,11 +644,25 @@ export class AppStore {
   }
 
   getVisibleWatchHistory(): WatchHistoryRecord[] {
+    const videoHistory = this.watchHistory.filter(h => !this.isTrackItemId(h.itemId));
     if (this.vaultUnlocked || (this.hiddenFolders.length === 0 && this.vaultEntries.length === 0)) {
-      return this.watchHistory;
+      const existing = new Set<string>(this.mediaItems.map(m => m.id));
+      return videoHistory.filter(h => existing.has(h.itemId));
     }
     const visibleIds = new Set<string>(this.getVisibleMediaItems().map(m => m.id));
-    return this.watchHistory.filter(h => visibleIds.has(h.itemId) || !this.mediaItems.some(m => m.id === h.itemId));
+    return videoHistory.filter(h => visibleIds.has(h.itemId));
+  }
+
+  /** 音乐历史不进入「最近观看 / 继续观看」与桌面卡片，视频链路只认视频。 */
+  isTrackItemId(itemId: string): boolean {
+    if (!itemId) return false;
+    if (itemId.startsWith('track_')) return true;
+    const item = this.mediaItems.find(m => m.id === itemId);
+    return !!item && item.mediaType === 'track';
+  }
+
+  isTrackItem(item: MediaItem | null | undefined): boolean {
+    return !!item && item.mediaType === 'track';
   }
 
   async hideFolder(sourceId: string, folderPath: string, folderName: string): Promise<void> {
@@ -715,7 +826,57 @@ export class AppStore {
 
   canAddSource(): boolean {
     if (this.isPro) return true;
-    return this.sources.length < AppConstants.FREE_MAX_SOURCES;
+    // 本机存储是系统能力内置项，不占用免费版的网络片源名额
+    return this.sources.filter(s => s.type !== 'local').length < AppConstants.FREE_MAX_SOURCES;
+  }
+
+  getAppContext(): common.UIAbilityContext | null {
+    return this.context;
+  }
+
+  // ---------------------------------------------------------------- 本机存储片源
+
+  getLocalSource(): MediaSource | undefined {
+    return this.sources.find(s => s.type === 'local' || s.id === AppConstants.LOCAL_SOURCE_ID);
+  }
+
+  /**
+   * 本机片源单例：固定 id=local_device，历史版本导入的条目已经挂着这个 sourceId，
+   * 因此升级后不用迁移数据就能直接被「片源管理 → 本机存储」接管。
+   */
+  async ensureLocalSource(rootUri: string = ''): Promise<MediaSource> {
+    let existing = this.getLocalSource();
+    if (!existing) {
+      // 启动早期 this.sources 还没加载完：必须先查库，否则会把已选好的根目录用空值覆盖掉
+      const all = await this.db.listSources();
+      this.sources = all;
+      existing = all.find(s => s.type === 'local' || s.id === AppConstants.LOCAL_SOURCE_ID);
+    }
+    if (existing) {
+      if (rootUri && existing.rootPath !== rootUri) {
+        existing.rootPath = rootUri;
+        existing.baseUrl = rootUri;
+        await this.db.upsertSource(existing);
+        this.sources = await this.db.listSources();
+      }
+      return existing;
+    }
+    const created: MediaSource = {
+      id: AppConstants.LOCAL_SOURCE_ID,
+      name: AppConstants.LOCAL_SOURCE_NAME,
+      type: 'local',
+      baseUrl: rootUri,
+      rootPath: rootUri,
+      username: '',
+      password: '',
+      allowInsecureTls: false,
+      cacheAlist302: false,
+      createdAt: Date.now(),
+      lastScannedAt: 0
+    };
+    await this.db.upsertSource(created);
+    this.sources = await this.db.listSources();
+    return created;
   }
 
   async saveSource(source: MediaSource): Promise<void> {
@@ -728,8 +889,21 @@ export class AppStore {
     await this.reloadAllData();
   }
 
+  /** 清空本机影库条目：保留「本机存储」片源与已选文件夹，只删索引，不动本机文件。 */
+  async clearLocalLibrary(): Promise<void> {
+    const src = this.getLocalSource();
+    if (!src) return;
+    await this.clearSourceIndex(src.id);
+    this.scanStatusText = '已清空本机影库条目，不影响本机文件';
+  }
+
   async clearSourceIndex(sourceId: string): Promise<void> {
+    const ids: string[] = [];
+    for (let i = 0; i < this.mediaItems.length; i++) {
+      if (this.mediaItems[i].sourceId === sourceId) ids.push(this.mediaItems[i].id);
+    }
     await this.db.clearSourceMediaItems(sourceId);
+    if (ids.length > 0) await this.db.deleteWatchHistoryItems(ids);
     await this.reloadAllData();
     this.scanStatusText = '已清理该片源本地影库索引';
   }
@@ -744,10 +918,11 @@ export class AppStore {
 
   async scanSource(source: MediaSource): Promise<number> {
     if (source.type === 'local') {
-      return 0;
+      return await this.scanLocalSource(source);
     }
     this.isScanning = true;
     this.scanStatusText = `正在连接 ${source.name}...`;
+    this.localProbeBudget = 800;
     const discovered: MediaItem[] = [];
     const maxItems = 100000;
     try {
@@ -794,13 +969,84 @@ export class AppStore {
     }
   }
 
+  /**
+   * 本机片源扫描：复用远端目录遍历，只是数据来自已授权目录。
+   * 没有根目录时明确提示，而不是静默返回 0。
+   */
+  private async scanLocalSource(source: MediaSource): Promise<number> {
+    const root = source.rootPath || '';
+    if (!root) {
+      this.scanStatusText = '还没有选择本机文件夹';
+      return 0;
+    }
+    await LocalAccess.activate([root]);
+    this.isScanning = true;
+    this.localProbeBudget = 800;
+    this.scanStatusText = '正在扫描本机目录...';
+    const discovered: MediaItem[] = [];
+    try {
+      await this.walkRemoteDir(source, root, 0, discovered);
+      if (discovered.length > 0) {
+        await this.db.upsertMediaItems(discovered);
+      }
+      source.lastScannedAt = Date.now();
+      await this.db.upsertSource(source);
+      await this.reloadAllData();
+      this.scanStatusText = `扫描完成：本机入库 ${discovered.length} 项`;
+      await this.backfillLocalPosters(20);
+      return discovered.length;
+    } catch (e) {
+      this.scanStatusText = `本机扫描失败：${e instanceof Error ? e.message : String(e)}`;
+      return 0;
+    } finally {
+      this.isScanning = false;
+    }
+  }
+
+  /** 单独回写一个条目（如音频时长探测完成），不触发整库刷新。 */
+  async persistMediaItem(item: MediaItem): Promise<void> {
+    await this.db.upsertMediaItems([item]);
+  }
+
+  /**
+   * 探测本机文件的时长与音视频标签；失败返回 null，绝不阻断入库。
+   * force=true 用于浏览/单文件导入这类少量调用；批量扫描仍受 localProbeBudget 约束。
+   */
+  private probeLocalFile(path: string, force: boolean = false): LocalProbeResult | null {
+    if (!force) {
+      if (this.localProbeBudget <= 0) return null;
+      this.localProbeBudget--;
+    }
+    try {
+      const f = fs.openSync(path, fs.OpenMode.READ_ONLY);
+      try {
+        const st = fs.statSync(f.fd);
+        const meta = prismNative.probeLocalMedia(f.fd, 0, st.size);
+        return {
+          size: st.size,
+          durationMs: meta.durationMs,
+          width: meta.width,
+          height: meta.height,
+          title: meta.title || '',
+          artist: meta.artist || '',
+          album: meta.album || ''
+        };
+      } finally {
+        fs.closeSync(f.fd);
+      }
+    } catch (_e) {
+      return null;
+    }
+  }
+
   private async walkRemoteDir(
     source: MediaSource,
     dirPath: string,
     depth: number,
     out: MediaItem[]
   ): Promise<void> {
-    if (depth > 4 || out.length >= 5000) return;
+    const maxDepth = source.type === 'local' ? 6 : 4;
+    if (depth > maxDepth || out.length >= 6000) return;
     this.scanStatusText = `正在扫描 ${dirPath}`;
     let entries: RemoteFileEntry[] = [];
     try {
@@ -827,6 +1073,10 @@ export class AppStore {
         await this.walkRemoteDir(source, e.path, depth + 1, out);
         continue;
       }
+      if (e.isAudio) {
+        out.push(await this.buildTrackItem(source, e, dirPath, entries));
+        continue;
+      }
       if (!e.isVideo) continue;
 
       const parsed = Formatters.parseMediaFilename(e.name);
@@ -849,7 +1099,8 @@ export class AppStore {
         : `${source.id}_${e.path}`;
 
       let item: MediaItem = {
-        id: `${source.id}_${e.path}`,
+        // 本机条目沿用历史 id（local_<uri>），避免与已导入的同一文件重复入库
+        id: source.type === 'local' ? `local_${e.path}` : `${source.id}_${e.path}`,
         sourceId: source.id,
         sourceType: source.type,
         remotePath: e.path,
@@ -878,6 +1129,18 @@ export class AppStore {
         addedAt: Date.now()
       };
 
+      // 本机视频顺手探测时长与分辨率：进详情页/继续观看前就有真实时长
+      if (source.type === 'local') {
+        const probe = this.probeLocalFile(e.fullUrl);
+        if (probe) {
+          item.durationMs = probe.durationMs;
+          item.fileSize = probe.size;
+          if (probe.width > 0 && probe.height > 0) {
+            item.qualityTag = probe.height >= 2160 ? '4K' : (probe.height >= 1080 ? '1080P' : parsed.qualityTag);
+          }
+        }
+      }
+
       // 同目录图片封面（Kodi/Emby 风格）：NAS 影库普遍这么放，优先于 TMDB
       if (!item.posterUrl && this.context) {
         const thumbHint = (fileNfo && fileNfo.thumbRaw) ? fileNfo.thumbRaw
@@ -896,15 +1159,88 @@ export class AppStore {
     }
   }
 
+  /**
+   * 构造音乐条目：内嵌标签优先，其次按目录 / 文件名推断。
+   * 扫描与文件浏览共用同一个 id，同一首歌不会重复入库。
+   */
+  async buildTrackItem(
+    source: MediaSource,
+    entry: RemoteFileEntry,
+    dirPath: string,
+    siblings: RemoteFileEntry[]
+  ): Promise<MediaItem> {
+    const parsed = Formatters.parseTrackInfo(entry.name, dirPath || entry.path);
+    let title = parsed.title || entry.name;
+    let artist = parsed.artist;
+    let album = parsed.album;
+    let durationMs = 0;
+    let size = entry.size;
+
+    if (source.type === 'local') {
+      // 扫描时用预算限流；用户点开/导入单个文件时立即探测，保证曲目时长不是 0
+      const probe = this.probeLocalFile(entry.fullUrl, !this.isScanning);
+      if (probe) {
+        durationMs = probe.durationMs;
+        size = probe.size;
+        if (probe.title) title = probe.title;
+        if (probe.artist) artist = probe.artist;
+        if (probe.album) album = probe.album;
+      }
+    }
+
+    const artistName = artist || '未知歌手';
+    const albumName = album || '未知专辑';
+    let coverUrl = '';
+    if (this.context) {
+      const art = LocalArtwork.pick(siblings, entry.name);
+      if (art) {
+        coverUrl = await LocalArtwork.materialize(this.context, source, art);
+      }
+    }
+
+    const dot = entry.name.lastIndexOf('.');
+    const ext = dot >= 0 ? entry.name.substring(dot + 1).toUpperCase() : '';
+    return {
+      id: `track_${source.id}_${entry.path}`,
+      sourceId: source.id,
+      sourceType: source.type,
+      remotePath: entry.path,
+      streamUrl: entry.fullUrl,
+      fileName: entry.name,
+      fileSize: size,
+      mediaType: 'track',
+      seriesKey: `album_${source.id}_${artistName}_${albumName}`.toLowerCase(),
+      seriesTitle: albumName,
+      seasonNo: 1,
+      episodeNo: 0,
+      title,
+      originalTitle: artistName,
+      year: 0,
+      overview: `${artistName} · ${albumName}`,
+      posterUrl: coverUrl,
+      backdropUrl: '',
+      rating: 0,
+      qualityTag: ext.length > 0 && ext.length <= 5 ? ext : 'AUDIO',
+      tmdbId: 0,
+      durationMs,
+      subtitleUrl: '',
+      addedAt: Date.now(),
+      artist: artistName,
+      album: albumName,
+      trackNo: parsed.trackNo
+    };
+  }
+
   async importLocalVideos(): Promise<MediaItem[]> {
     if (!this.context) return [];
     const docPicker = new picker.DocumentViewPicker(this.context);
     const opts = new picker.DocumentSelectOptions();
     opts.maxSelectNumber = 50;
-    opts.fileSuffixFilters = ['视频|.mp4,.mkv,.mov,.m4v,.webm,.ts,.avi,.flv'];
+    opts.fileSuffixFilters = ['视频与音乐|.mp4,.mkv,.mov,.m4v,.webm,.ts,.avi,.flv,.mp3,.flac,.m4a,.aac,.wav,.ogg,.opus,.ape'];
     const uris = await docPicker.select(opts);
     if (!uris || uris.length === 0) return [];
 
+    const source = await this.ensureLocalSource();
     const imported: MediaItem[] = [];
     const granted: string[] = [];
     for (let i = 0; i < uris.length; i++) {
@@ -912,8 +1248,7 @@ export class AppStore {
       const decoded = decodeURIComponent(uri);
       const slash = decoded.lastIndexOf('/');
       const fileName = slash >= 0 ? decoded.substring(slash + 1) : `local_${i}.mp4`;
-      if (!Formatters.isVideoFile(fileName)) continue;
-      const item = await this.buildLocalItem(uri, fileName);
+      const item = await this.buildLocalItem(uri, fileName, source);
       if (!item) continue;
       imported.push(item);
       granted.push(uri);
@@ -922,10 +1257,14 @@ export class AppStore {
     // 先把授权固化，再入库：顺序反了的话，重启后就是一堆打不开的条目
     await LocalAccess.persist(granted);
     await this.commitLocalItems(imported);
+    await this.backfillLocalPosters(12);
     return imported;
   }
 
-  /** 选一个文件夹，把里面（含子目录）的视频全部导入。手机上没有全盘扫描权限，这是唯一可行的批量方式。 */
+  /**
+   * 选一个文件夹作为「本机存储」片源：记住根目录，随后走与 NAS 相同的扫描流程。
+   * 手机上没有全盘扫描权限，这是唯一可行的批量方式。
+   */
   async importLocalFolder(): Promise<MediaItem[]> {
     if (!this.context) return [];
     const docPicker = new picker.DocumentViewPicker(this.context);
@@ -936,32 +1275,20 @@ export class AppStore {
     if (!dirs || dirs.length === 0) return [];
 
     const dir = dirs[0];
-    const files: string[] = [];
-    await AppStore.collectVideoUris(dir, files, 0);
-    if (files.length === 0) return [];
+    const source = await this.ensureLocalSource(dir);
 
+    const files: string[] = [];
+    await AppStore.collectMediaUris(dir, files, 0);
     // 目录本身也要授权，否则子项即便持久化过，父目录不可达时仍会失败
     await LocalAccess.persist([dir].concat(files));
 
-    const imported: MediaItem[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const uri = files[i];
-      const decoded = decodeURIComponent(uri);
-      const slash = decoded.lastIndexOf('/');
-      const fileName = slash >= 0 ? decoded.substring(slash + 1) : `local_${i}.mp4`;
-      const item = await this.buildLocalItem(uri, fileName);
-      if (item) imported.push(item);
-    }
-    await this.commitLocalItems(imported);
-    return imported;
+    await this.scanLocalSource(source);
+    return this.mediaItems.filter(it => it.sourceId === source.id);
   }
 
-  /**
-   * 递归收集视频文件。
-   * 必须用异步 IO：用户可能选整个「我的手机」，同步遍历会把主线程卡住。
-   */
-  private static async collectVideoUris(dir: string, out: string[], depth: number): Promise<void> {
-    if (depth > 6 || out.length > 2000) return;
+  /** 递归收集视频与音频文件；必须用异步 IO，否则选整个「我的手机」会卡住主线程。 */
+  private static async collectMediaUris(dir: string, out: string[], depth: number): Promise<void> {
+    if (depth > 6 || out.length > 4000) return;
     let names: string[] = [];
     try {
       names = await fs.listFile(dir);
@@ -980,14 +1307,35 @@ export class AppStore {
         continue;
       }
       if (isDir) {
-        await AppStore.collectVideoUris(child, out, depth + 1);
-      } else if (Formatters.isVideoFile(name)) {
+        await AppStore.collectMediaUris(child, out, depth + 1);
+      } else if (Formatters.isVideoFile(name) || Formatters.isAudioFile(name)) {
         out.push(child);
       }
     }
   }
 
-  private async buildLocalItem(uri: string, fileName: string): Promise<MediaItem | null> {
+  private async buildLocalItem(uri: string, fileName: string, source: MediaSource): Promise<MediaItem | null> {
+    const decoded = decodeURIComponent(uri);
+    const slash = decoded.lastIndexOf('/');
+    const dirPath = slash > 0 ? decoded.substring(0, slash) : '';
+
+    if (Formatters.isAudioFile(fileName)) {
+      const entry: RemoteFileEntry = {
+        name: fileName,
+        path: uri,
+        fullUrl: uri,
+        isDirectory: false,
+        size: 0,
+        lastModified: '',
+        contentType: 'audio/*',
+        isVideo: false,
+        isSubtitle: false,
+        isAudio: true,
+        isImage: false
+      };
+      return await this.buildTrackItem(source, entry, dirPath, []);
+    }
+
     if (!Formatters.isVideoFile(fileName)) return null;
     let durationMs = 0;
     let fileSize = 0;
@@ -1010,7 +1358,7 @@ export class AppStore {
     const qTag = height >= 2160 ? '4K' : (height >= 1080 ? '1080P' : parsed.qualityTag);
     return {
       id: `local_${uri}`,
-      sourceId: 'local_device',
+      sourceId: source.id,
       sourceType: 'local',
       remotePath: uri,
       streamUrl: uri,
@@ -1042,9 +1390,11 @@ export class AppStore {
     await this.reloadAllData();
   }
 
-  /** 启动时重新激活本机视频的持久授权，否则重启后条目全变死链。 */
+  /** 启动时重新激活本机存储的持久授权，否则重启后条目与目录全变死链。 */
   async activateLocalPermissions(): Promise<void> {
     const uris: string[] = [];
+    const local = this.getLocalSource();
+    if (local && local.rootPath) uris.push(local.rootPath);
     for (let i = 0; i < this.mediaItems.length; i++) {
       const item = this.mediaItems[i];
       if (item.sourceType === 'local' && item.remotePath) uris.push(item.remotePath);
@@ -1052,23 +1402,10 @@ export class AppStore {
     await LocalAccess.activate(uris);
   }
 
-  /**
-   * Resolves a Douyin share link or share command, adds it to the library,
-   * and optionally downloads the watermark-free MP4 to local device storage.
-   */
-  async resolveDouyinShareAndImport(shareText: string, saveOfflineNow: boolean = false): Promise<MediaItem> {
+  /** 解析抖音分享链接/口令，入库后直接在线播放，不落地副本。 */
+  async resolveDouyinShareAndImport(shareText: string): Promise<MediaItem> {
     const info = await DouyinClient.resolveShareLink(shareText);
     const item = DouyinClient.toMediaItem(info, 'douyin_share');
-    if (saveOfflineNow && this.context) {
-      const saved = await DouyinClient.saveVideoToLocal(item.streamUrl, item.title, this.context, {
-        fileNameHint: item.fileName
-      });
-      if (saved.ok && saved.localPath) {
-        item.streamUrl = saved.localPath;
-        item.fileSize = saved.fileSize;
-        item.qualityTag = '抖音已离线保存';
-      }
-    }
     await this.db.upsertMediaItems([item]);
     await this.reloadAllData();
     return item;
@@ -1125,107 +1462,13 @@ export class AppStore {
     }
   }
 
-  /**
-   * Downloads any remote or Douyin video item to persistent local storage so it can be watched offline,
-   * updates its library entry, and optionally exports via system file picker.
-   */
-  async saveMediaItemOffline(
-    item: MediaItem,
-    source: MediaSource | undefined,
-    exportToSystemPicker: boolean = false,
-    onProgress?: (receivedBytes: number) => void
-  ): Promise<LocalVideoSaveResult> {
-    if (!this.context) {
-      return { ok: false, localPath: '', fileSize: 0, exportedUri: '', message: '上下文未就绪', offline: false };
-    }
-    let playUrl = item.streamUrl;
-    try {
-      const resolved = await RemoteSourceClient.resolvePlayableStream(item, source);
-      playUrl = resolved.streamUrl;
-    } catch (_e) {
-      // Fallback to item.streamUrl
-    }
-
-    let dlUrl = playUrl;
-    let tempStreamId = '';
-    // 远端 SMB 或 WebDAV/Alist 的 HTTP 流才走本地 Range Proxy；
-    // 已离线保存的条目 streamUrl 是沙箱路径，再套代理会把本地路径当远端打开（502）。
-    const needsProxy = RemoteSourceClient.needsRangeProxy(playUrl, source);
-    if (needsProxy) {
-      this.ensureNativeProxy();
-      tempStreamId = `dl_${Date.now()}`;
-      const proxyCfg = RemoteSourceClient.buildProxyConfig(playUrl, source);
-      const proxied = prismNative.registerProxyStream(tempStreamId, proxyCfg);
-      if (!proxied) {
-        return {
-          ok: false,
-          localPath: '',
-          fileSize: 0,
-          exportedUri: '',
-          message: '保存失败：本地代理未就绪，无法读取该片源',
-          offline: false
-        };
-      }
-      dlUrl = proxied;
-    }
-
-    let res: LocalVideoSaveResult;
-    try {
-      res = await DouyinClient.saveVideoToLocal(dlUrl, item.title, this.context, {
-        exportToSystemPicker: exportToSystemPicker,
-        fileNameHint: item.fileName || item.remotePath,
-        onProgress: onProgress
-      });
-    } finally {
-      if (tempStreamId) {
-        try {
-          prismNative.unregisterProxyStream(tempStreamId);
-        } catch (_e) {
-          // Ignore
-        }
-      }
-    }
-
-    if (res.ok && res.localPath && res.offline) {
-      item.streamUrl = res.localPath;
-      item.fileSize = res.fileSize;
-      if (!item.qualityTag.includes('已保存')) {
-        item.qualityTag = item.qualityTag ? `${item.qualityTag} · 已保存` : '已离线保存';
-      }
-      await this.db.upsertMediaItems([item]);
-      await this.reloadAllData();
-    }
-    return res;
-  }
-
-  /**
-   * 清空离线影库与缓存。离线条目会从影库移除（重新扫描片源可恢复）。
-   * 返回按清理前统计估算的释放字节数。
-   */
-  async clearLocalStorage(): Promise<number> {
+  /** 只清空缓存目录（封面、字幕、分享图等）；媒体文件不进 app 存储。 */
+  async clearCache(): Promise<number> {
     if (!this.context) return 0;
-    const ctx = this.context;
-    const before = await LocalStorageUsage.collect(ctx);
-    const savedDir = `${ctx.filesDir}/saved_videos`;
-    const offlineIds: string[] = [];
-    for (let i = 0; i < this.mediaItems.length; i++) {
-      if (this.mediaItems[i].streamUrl.startsWith(`${savedDir}/`)) {
-        offlineIds.push(this.mediaItems[i].id);
-      }
-    }
-
-    AppStore.removeDirContents(ctx.cacheDir, 0);
-    AppStore.removeDirContents(savedDir, 0);
-    if (offlineIds.length > 0) {
-      await this.db.deleteMediaItems(offlineIds);
-      await this.db.deleteWatchHistoryItems(offlineIds);
-      await this.reloadAllData();
-    }
-
-    const freed = before.offlineBytes + before.cacheBytes;
-    hilog.info(0x0001, 'PrismStorage', 'cleared bytes=%{public}d items=%{public}d',
-      freed, offlineIds.length);
-    return freed;
+    const before = await LocalStorageUsage.collect(this.context);
+    AppStore.removeDirContents(this.context.cacheDir, 0);
+    hilog.info(0x0001, 'PrismStorage', 'cache cleared bytes=%{public}d', before.cacheBytes);
+    return before.cacheBytes;
   }
 
   /** 只清空目录内容，保留目录本身；不跟随符号链接 */
@@ -1256,6 +1499,14 @@ export class AppStore {
   }
 
   async addRemoteFileToLibrary(source: MediaSource, entry: RemoteFileEntry, siblingSubUrl: string): Promise<MediaItem> {
+    if (entry.isAudio) {
+      const slash = entry.path.lastIndexOf('/');
+      const dirPath = slash > 0 ? entry.path.substring(0, slash) : '/';
+      const track = await this.buildTrackItem(source, entry, dirPath, []);
+      await this.db.upsertMediaItems([track]);
+      await this.reloadAllData();
+      return track;
+    }
     const ytId = (source.type === 'youtube' || entry.fullUrl.startsWith('youtube://'))
       ? YouTubeClient.extractVideoId(entry.fullUrl)
       : '';
@@ -1396,11 +1647,120 @@ export class AppStore {
     return groups;
   }
 
+  // ---------------------------------------------------------------- 音乐库
+
+  getMusicTracks(): MediaItem[] {
+    return this.getVisibleMediaItems().filter(it => it.mediaType === 'track');
+  }
+
+  /**
+   * 按「片源 + 歌手 + 专辑」聚合音乐。
+   * 曲序按 trackNo（内嵌标签或文件名前缀）排，缺失时按曲名，避免每次进页面顺序乱跳。
+   */
+  getMusicAlbums(): MusicAlbum[] {
+    const map = new Map<string, MusicAlbum>();
+    // 同一张专辑可能同时来自本机与 NAS：按「歌手 + 专辑」合并，曲目按标题/轨号/时长去重
+    const seen = new Map<string, MediaItem>();
+    const tracks = this.getMusicTracks();
+    for (let i = 0; i < tracks.length; i++) {
+      const it = tracks[i];
+      const artist = it.artist || '未知歌手';
+      const album = it.album || '未知专辑';
+      const key = `album_${artist}_${album}`.toLowerCase();
+      let grp = map.get(key);
+      if (!grp) {
+        grp = { albumKey: key, album, artist, coverUrl: '', tracks: [] };
+        map.set(key, grp);
+      }
+      if (!grp.coverUrl && it.posterUrl) grp.coverUrl = it.posterUrl;
+
+      const dedupeKey = `${key}|${it.title.toLowerCase()}|${it.trackNo || 0}|${Math.round(it.durationMs)}`;
+      const prev = seen.get(dedupeKey);
+      if (prev) {
+        if (prev.sourceType !== 'local' && it.sourceType === 'local') {
+          seen.set(dedupeKey, it);
+        }
+        continue;
+      }
+      seen.set(dedupeKey, it);
+    }
+    const albums = Array.from(map.values());
+    seen.forEach((it: MediaItem) => {
+      const artist = it.artist || '未知歌手';
+      const album = it.album || '未知专辑';
+      const key = `album_${artist}_${album}`.toLowerCase();
+      const grp = map.get(key);
+      if (grp) grp.tracks.push(it);
+    });
+    albums.forEach(a => {
+      a.tracks.sort((x, y) => {
+        const xn = x.trackNo || 0;
+        const yn = y.trackNo || 0;
+        if (xn !== yn) {
+          if (xn === 0) return 1;
+          if (yn === 0) return -1;
+          return xn - yn;
+        }
+        return x.title.localeCompare(y.title, 'zh-CN');
+      });
+    });
+    return albums;
+  }
+
+  /** 音乐播放队列：同一张专辑的全部曲目；条目不在库中时至少返回它自己。 */
+  getMusicQueue(item: MediaItem): MediaItem[] {
+    const albums = this.getMusicAlbums();
+    const hit = albums.find(a => a.tracks.some(t => t.id === item.id));
+    if (hit && hit.tracks.length > 0) return hit.tracks;
+    return [item];
+  }
+
+  getMusicHistory(): WatchHistoryRecord[] {
+    return this.watchHistory.filter(h => this.isTrackItemId(h.itemId));
+  }
+
   handleIncomingFileWant(uri: string): void {
     if (!uri) return;
     const decoded = decodeURIComponent(uri);
     const slash = decoded.lastIndexOf('/');
     const fileName = slash >= 0 ? decoded.substring(slash + 1) : 'external_video.mp4';
+    const parentDir = slash > 0 ? decoded.substring(0, slash) : '';
+
+    // 系统「打开方式」送进来的音频：直接进音乐播放页
+    if (Formatters.isAudioFile(fileName)) {
+      const track = Formatters.parseTrackInfo(fileName, parentDir);
+      this.pendingLaunchItem = {
+        id: `track_external_${uri}`,
+        sourceId: AppConstants.LOCAL_SOURCE_ID,
+        sourceType: 'local',
+        remotePath: uri,
+        streamUrl: uri,
+        fileName,
+        fileSize: 0,
+        mediaType: 'track',
+        seriesKey: `album_external_${track.album}`,
+        seriesTitle: track.album || '外部音乐',
+        seasonNo: 1,
+        episodeNo: 0,
+        title: track.title,
+        originalTitle: track.artist,
+        year: 0,
+        overview: '通过系统“打开方式”直接播放',
+        posterUrl: '',
+        backdropUrl: '',
+        rating: 0,
+        qualityTag: 'AUDIO',
+        tmdbId: 0,
+        durationMs: 0,
+        subtitleUrl: '',
+        addedAt: Date.now(),
+        artist: track.artist,
+        album: track.album,
+        trackNo: track.trackNo
+      };
+      return;
+    }
+
     const parsed = Formatters.parseMediaFilename(fileName);
     this.pendingLaunchItem = {
       id: `want_${uri}`,

@@ -5,8 +5,6 @@ import { fileIo as fs, statfs } from '@kit.CoreFileKit';
 export class LocalStorageUsageInfo {
   /** 应用数据（filesDir）+ 缓存 */
   @Trace appBytes: number = 0;
-  /** 离线影库（saved_videos） */
-  @Trace offlineBytes: number = 0;
   /** 应用缓存 */
   @Trace cacheBytes: number = 0;
   /** 设备可用空间 */
@@ -23,11 +21,9 @@ export class LocalStorageUsage {
   static async collect(context: common.UIAbilityContext): Promise<LocalStorageUsageInfo> {
     const filesBytes = LocalStorageUsage.pathSize(context.filesDir, 0);
     const cacheBytes = LocalStorageUsage.pathSize(context.cacheDir, 0);
-    const offlineBytes = LocalStorageUsage.pathSize(`${context.filesDir}/saved_videos`, 0);
 
     const info = new LocalStorageUsageInfo();
     info.appBytes = filesBytes + cacheBytes;
-    info.offlineBytes = offlineBytes;
     info.cacheBytes = cacheBytes;
     try {
       info.freeBytes = statfs.getFreeSizeSync(context.filesDir);

@@ -8,10 +8,12 @@ PrismPlayer is a native video player for HarmonyOS. Connect your own WebDAV, SMB
 
 ## What it does
 
-- **Your own sources, directly**: WebDAV, SMB (SMB2/3), Plex, Emby, AList, S3 (AWS / Cloudflare R2 / MinIO), IPTV / M3U, local videos, and public video links (Bilibili, Douyin).
+- **Your own sources, directly**: WebDAV, SMB (SMB2/3), Plex, Emby, AList, S3 (AWS / Cloudflare R2 / MinIO), IPTV / M3U, on-device storage, and public video links (Bilibili, Douyin).
+- **On-device storage is a first-class source**: pick a folder on your phone, tablet or HarmonyOS PC and browse, scan and index it exactly like a NAS — video, music and subtitles together.
 - **Smooth 4K HDR playback**: hardware decoding first, with automatic FFmpeg fallback for codecs the device cannot decode — including 10-bit HEVC.
 - **Subtitles that look right**: ASS / SSA effects, bilingual subtitles, subtitle search (SubDL / OpenSubtitles), automatic external and embedded track matching, precise delay adjustment.
 - **Poster wall and episode management**: TMDB metadata for posters, synopses and seasons; movies and series grouped automatically; progress remembered per episode.
+- **Music library**: audio in the same sources is grouped by artist / album, with a play queue, previous / next, repeat modes and background playback controlled from the lock screen and Control Center.
 - **Built for binge-watching**: skip intro / outro, playback speed, audio track switching, aspect ratio, gesture controls.
 - **Consistent on all three form factors**: phone, tablet and HarmonyOS PC (2in1); keyboard and mouse shortcuts plus multi-window on PC, and Handoff between phone and tablet.
 - **Private by default**: hide selected folders behind a pattern lock.
@@ -26,7 +28,7 @@ PrismPlayer is a native video player for HarmonyOS. Connect your own WebDAV, SMB
 | AList / OpenList | Aliyun Drive, Quark, 115 and others |
 | S3 | AWS S3, Cloudflare R2, MinIO and other object storage |
 | IPTV / M3U | Live channel playback |
-| Local video | Files on the device |
+| On-device storage | Folders on the device — video, music and subtitles in one place |
 | Online links | Paste a public video link and play |
 
 ## Getting started
