@@ -28,6 +28,24 @@ export struct LibraryView {
   @Local category: MediaCategory = 'all';
   @Local heroImgFailed: boolean = false;
   @Local refreshing: boolean = false;
+  private scroller: Scroller = new Scroller();
+  /** 首页每个分类只露前 N 个，完整列表在分类 chip 页 */
+  private homeLimit: number = 6;
+
+  private setCategory(value: MediaCategory): void {
+    this.category = value;
+    this.scroller.scrollTo({ xOffset: 0, yOffset: 0 });
+  }
+
+  private homeMovies(): MediaItem[] {
+    const all = this.getFilteredMovies();
+    return this.category === 'all' ? all.slice(0, this.homeLimit) : all;
+  }
+
+  private homeSeries(): SeriesGroup[] {
+    const all = this.getFilteredSeries();
+    return this.category === 'all' ? all.slice(0, this.homeLimit) : all;
+  }
 
   private getLocalMovies(): MediaItem[] {
     return this.store.getVisibleMediaItems().filter(it => it.mediaType === 'movie' && it.sourceType === 'local');
@@ -55,6 +73,10 @@ export struct LibraryView {
     if (this.category === 'music') {
       return `${this.musicAlbumCount()} 张专辑 · ${this.musicTrackCount()} 首`;
     }
+    if (this.category === 'movie') return `${this.getFilteredMovies().length} 部电影`;
+    if (this.category === 'tv') return `${this.getFilteredSeries().length} 部剧集`;
+    if (this.category === 'favorite') return `${this.getFilteredMovies().length} 部收藏`;
+    if (this.category === 'private') return `${this.getFilteredMovies().length} 部私密`;
     return `${this.getFilteredMovies().length} 部电影 · ${this.getFilteredSeries().length} 部剧集` +
       (this.musicTrackCount() > 0 ? ` · ${this.musicTrackCount()} 首音乐` : '');
   }
@@ -159,10 +181,10 @@ export struct LibraryView {
         .width('100%')
 
         Refresh({ refreshing: this.refreshing }) {
-        Scroll() {
+        Scroll(this.scroller) {
           Column({ space: 20 }) {
         // Hero Cinema Spotlight Banner
-        if (this.category !== 'music' && this.getHeroItem() !== null) {
+        if (this.category === 'all' && this.getHeroItem() !== null) {
           Stack({ alignContent: Alignment.BottomStart }) {
             if ((this.getHeroItem()!.backdropUrl || this.getHeroItem()!.posterUrl) && !this.heroImgFailed) {
               Image(MediaArtwork.resolve(this.getHeroItem()!.backdropUrl || this.getHeroItem()!.posterUrl))
@@ -307,7 +329,7 @@ export struct LibraryView {
         }
 
         // Continue Watching Rail
-        if (this.category !== 'music' && this.getContinueWatching().length > 0) {
+        if (this.category === 'all' && this.getContinueWatching().length > 0) {
           Column({ space: 10 }) {
             Text('继续观看')
               .fontSize(16)
@@ -531,10 +553,17 @@ export struct LibraryView {
         // Series Section
         if (this.getFilteredSeries().length > 0) {
           Column({ space: 10 }) {
-            Text('剧集')
-              .fontSize(17)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
+            Row() {
+              Text('剧集')
+                .fontSize(17)
+                .fontWeight(FontWeight.Bold)
+                .fontColor($r('app.color.text_primary'))
+              Blank()
+              if (this.category === 'all' && this.getFilteredSeries().length > this.homeLimit) {
+                this.moreLink(() => this.setCategory('tv'))
+              }
+            }
+            .width('100%')
 
             GridRow({
               columns: 12,
@@ -544,7 +573,7 @@ export struct LibraryView {
                 reference: BreakpointsReference.ComponentSize
               }
             }) {
-              ForEach(this.getFilteredSeries(), (grp: SeriesGroup) => {
+              ForEach(this.homeSeries(), (grp: SeriesGroup) => {
                 GridCol({ span: { xs: 4, sm: 3, md: 2, lg: 2 } }) {
                   PosterCard({
                     title: grp.title,
@@ -576,7 +605,7 @@ export struct LibraryView {
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.text_primary'))
               Blank()
-              if (this.getFilteredMovies().length > 1) {
+              if (this.category === 'movie' && this.getFilteredMovies().length > 1) {
                 Text('播放全部')
                   .fontSize(12)
                   .fontColor($r('app.color.accent_blue'))
@@ -585,6 +614,9 @@ export struct LibraryView {
                   .borderRadius(16)
                   .backgroundColor($r('app.color.fill_subtle'))
                   .onClick(() => this.onPlayMovieList(this.getFilteredMovies()))
+              }
+              if (this.category === 'all' && this.getFilteredMovies().length > this.homeLimit) {
+                this.moreLink(() => this.setCategory('movie'))
               }
             }
             .width('100%')
@@ -597,7 +629,7 @@ export struct LibraryView {
                 reference: BreakpointsReference.ComponentSize
               }
             }) {
-              ForEach(this.getFilteredMovies(), (item: MediaItem) => {
+              ForEach(this.homeMovies(), (item: MediaItem) => {
                 GridCol({ span: { xs: 4, sm: 3, md: 2, lg: 2 } }) {
                   PosterCard({
                     title: item.title,
@@ -627,9 +659,12 @@ export struct LibraryView {
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.text_primary'))
               Blank()
-              Text(`${this.musicAlbumCount()} 张 · ${this.musicTrackCount()} 首`)
-                .fontSize(11)
-                .fontColor($r('app.color.text_body_muted'))
+              Row({ space: 8 }) {
+                Text(`${this.musicAlbumCount()} 张 · ${this.musicTrackCount()} 首`)
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_body_muted'))
+                this.moreLink(() => this.setCategory('music'))
+              }
             }
             .width('100%')
 
@@ -646,7 +681,7 @@ export struct LibraryView {
         }
 
         if (this.category !== 'music' && this.getFilteredMovies().length === 0 &&
-          this.getFilteredSeries().length === 0 && this.musicAlbumCount() === 0) {
+          this.getFilteredSeries().length === 0 && !(this.category === 'all' && this.musicAlbumCount() > 0)) {
           Column({ space: 12 }) {
             SymbolGlyph($r('sys.symbol.movie'))
               .fontSize(38)
@@ -710,6 +745,18 @@ export struct LibraryView {
   }
 
   @Builder
+  moreLink(action: () => void) {
+    Text('更多')
+      .fontSize(12)
+      .fontColor($r('app.color.accent_blue'))
+      .height(32)
+      .padding({ left: 12, right: 12 })
+      .borderRadius(16)
+      .backgroundColor($r('app.color.fill_subtle'))
+      .onClick(action)
+  }
+
+  @Builder
   filterChip(label: string, value: MediaCategory) {
     Text(label)
       .fontSize(13)
@@ -724,8 +771,6 @@ export struct LibraryView {
         color: this.category === value
           ? $r('app.color.accent_blue') : $r('app.color.fill_strong')
       })
-      .onClick(() => {
-        this.category = value;
-      })
+      .onClick(() => this.setCategory(value))
   }
 }
