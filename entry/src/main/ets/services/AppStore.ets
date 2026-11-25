@@ -1,6 +1,8 @@
 import { common } from '@kit.AbilityKit';
+import { promptAction } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
+import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import prismNative from 'libprismplayer.so';
 import { AppConstants, BreakpointType } from '../common/Constants';
 import { Formatters } from '../common/Formatters';
@@ -27,6 +29,7 @@ import { CardData, CardSnapshot, CARD_SNAPSHOT_KEY } from './CardSnapshot';
 import { CardFormData } from './CardFormData';
 import { CardPoster } from './CardPoster';
 import { LocalArtwork } from './LocalArtwork';
+import { LocalFileClient } from './LocalFileClient';
 import { MediaPoster } from './MediaPoster';
 import { LocalAccess } from './LocalAccess';
 import { LocalStorageUsage } from './LocalStorageUsage';
@@ -979,7 +982,13 @@ export class AppStore {
       this.scanStatusText = '还没有选择本机文件夹';
       return 0;
     }
+    // 先激活持久授权再校验，避免冷启动时 activate 还没完成就误判失效
     await LocalAccess.activate([root]);
+    // 授权失效或历史版本存进了文件 URI 时，明确提示重新选择，而不是报「入库 0 项」
+    if (!(await LocalFileClient.isDirectory(root))) {
+      this.scanStatusText = '本机文件夹不可访问，请在片源管理里重新选择';
+      return 0;
+    }
     this.isScanning = true;
     this.localProbeBudget = 800;
     this.scanStatusText = '正在扫描本机目录...';
@@ -1262,6 +1271,48 @@ export class AppStore {
   }
 
   /**
+   * 从系统相册选视频。新用户拍的视频都在相册里，而文件选择器看不到相册目录，
+   * 所以这是「一进来就有内容能播」的关键入口。PhotoViewPicker 是系统安全选择器，
+   * 不需要读媒体库权限（READ_IMAGEVIDEO 是 system_basic 受限权限，普通应用拿不到）。
+   */
+  async importFromGallery(): Promise<MediaItem[]> {
+    if (!this.context) return [];
+    let uris: string[] = [];
+    try {
+      const viewPicker = new photoAccessHelper.PhotoViewPicker();
+      const opts = new photoAccessHelper.PhotoSelectOptions();
+      opts.MIMEType = photoAccessHelper.PhotoViewMIMETypes.VIDEO_TYPE;
+      opts.maxSelectNumber = 20;
+      const picked = await viewPicker.select(opts);
+      uris = picked && picked.photoUris ? picked.photoUris : [];
+    } catch (e) {
+      hilog.info(0x0001, 'PrismLocal', 'gallery picker closed: %{public}s', JSON.stringify(e));
+      return [];
+    }
+    if (uris.length === 0) return [];
+
+    const source = await this.ensureLocalSource();
+    const imported: MediaItem[] = [];
+    const granted: string[] = [];
+    for (let i = 0; i < uris.length; i++) {
+      const uri = uris[i];
+      const decoded = decodeURIComponent(uri);
+      const slash = decoded.lastIndexOf('/');
+      const fileName = slash >= 0 ? decoded.substring(slash + 1) : `video_${i}.mp4`;
+      const item = await this.buildLocalItem(uri, fileName, source, true);
+      if (!item) continue;
+      imported.push(item);
+      granted.push(uri);
+    }
+
+    // 相册 URI 走与文件选择器同一套持久化；系统不接受时本次仍可播放，不留死链错误弹窗
+    await LocalAccess.persist(granted);
+    await this.commitLocalItems(imported);
+    await this.backfillLocalPosters(12);
+    return imported;
+  }
+
+  /**
    * 选一个文件夹作为「本机存储」片源：记住根目录，随后走与 NAS 相同的扫描流程。
    * 手机上没有全盘扫描权限，这是唯一可行的批量方式。
    */
@@ -1275,6 +1326,14 @@ export class AppStore {
     if (!dirs || dirs.length === 0) return [];
 
     const dir = dirs[0];
+    // 先确认拿到的确实是可读目录：部分设备/系统版本会忽略 FOLDER 模式返回文件 URI，
+    // 若直接写进 rootPath，片源卡会变成点不开的坏根目录。
+    if (!(await LocalFileClient.isDirectory(dir))) {
+      promptAction.showToast({ message: '请选择文件夹；当前选择无法作为本机目录' });
+      return [];
+    }
+    hilog.debug(0x0001, 'PrismLocal', 'folder picked: %{public}s', dir);
+
     const source = await this.ensureLocalSource(dir);
 
     const files: string[] = [];
@@ -1291,7 +1350,7 @@ export class AppStore {
     if (depth > 6 || out.length > 4000) return;
     let names: string[] = [];
     try {
-      names = await fs.listFile(dir);
+      names = await LocalFileClient.listNames(dir);
     } catch (e) {
       hilog.warn(0x0001, 'PrismLocal', 'list failed depth=%{public}d: %{public}s', depth, JSON.stringify(e));
       return;
@@ -1299,7 +1358,7 @@ export class AppStore {
     for (let i = 0; i < names.length; i++) {
       const name = names[i];
       if (name.startsWith('.')) continue;
-      const child = `${dir}/${name}`;
+      const child = LocalFileClient.joinChildPath(dir, name);
       let isDir = false;
       try {
         isDir = (await fs.stat(child)).isDirectory();
@@ -1314,7 +1373,8 @@ export class AppStore {
     }
   }
 
-  private async buildLocalItem(uri: string, fileName: string, source: MediaSource): Promise<MediaItem | null> {
+  private async buildLocalItem(uri: string, fileName: string, source: MediaSource,
+    assumeVideo: boolean = false): Promise<MediaItem | null> {
     const decoded = decodeURIComponent(uri);
     const slash = decoded.lastIndexOf('/');
     const dirPath = slash > 0 ? decoded.substring(0, slash) : '';
@@ -1336,7 +1396,8 @@ export class AppStore {
       return await this.buildTrackItem(source, entry, dirPath, []);
     }
 
-    if (!Formatters.isVideoFile(fileName)) return null;
+    // 相册 URI 偶尔不带扩展名（媒体库只保证是视频），不能因为文件名没后缀就丢条目
+    if (!assumeVideo && !Formatters.isVideoFile(fileName)) return null;
     let durationMs = 0;
     let fileSize = 0;
     let width = 0;

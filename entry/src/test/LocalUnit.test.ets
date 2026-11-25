@@ -5,6 +5,7 @@ import { MediaItem, MediaSource, MediaSourceType } from '../main/ets/common/Type
 import { DouyinClient } from '../main/ets/services/DouyinClient';
 import { EmbyClient, EmbySessionContext } from '../main/ets/services/EmbyClient';
 import { IptvClient } from '../main/ets/services/IptvClient';
+import { LocalFileClient } from '../main/ets/services/LocalFileClient';
 import { NfoParser } from '../main/ets/services/NfoParser';
 import { PlexClient } from '../main/ets/services/PlexClient';
 import { RemoteSourceClient } from '../main/ets/services/RemoteSourceClient';
@@ -38,6 +39,25 @@ export default function localUnitTest() {
     it('encodes_basic_auth_header', 0, () => {
       const hdr = Formatters.buildBasicAuthHeader('admin', 'pass123');
       expect(hdr).assertEqual('Basic YWRtaW46cGFzczEyMw==');
+    });
+
+    it('builds_local_picker_child_paths', 0, () => {
+      // Picker 授权目录是 URI，必须走 fd 枚举；沙箱路径才可以直接 listFile
+      expect(LocalFileClient.isPickerUri('file://docs/storage/Users/currentUser/Download')).assertTrue();
+      expect(LocalFileClient.isPickerUri('content://media/external/video/1')).assertTrue();
+      expect(LocalFileClient.isPickerUri('/data/storage/el2/base/haps/entry/files/music')).assertFalse();
+      // 子路径拼接不能把 URI 的协议头或结尾斜杠弄丢；URI 里的文件名必须编码
+      expect(LocalFileClient.joinChildPath('file://docs/a/Download/', '电影'))
+        .assertEqual('file://docs/a/Download/%E7%94%B5%E5%BD%B1');
+      expect(LocalFileClient.joinChildPath('file://docs/a/Download', 'a.mp4'))
+        .assertEqual('file://docs/a/Download/a.mp4');
+      // `#` 不编码会被当成 URI fragment，stat 会落到父目录（扫描把文件当目录的根因）
+      expect(LocalFileClient.joinChildPath('file://docs/a/Download', '# 说明.txt'))
+        .assertEqual('file://docs/a/Download/%23%20%E8%AF%B4%E6%98%8E.txt');
+      expect(LocalFileClient.joinChildPath('/', 'a.mp4')).assertEqual('/a.mp4');
+      // 沙箱路径不是 URI，`#` 和中文都保持原样
+      expect(LocalFileClient.joinChildPath('/data/files/music', '# 说明.txt'))
+        .assertEqual('/data/files/music/# 说明.txt');
     });
 
     it('routes_only_remote_streams_through_range_proxy', 0, () => {
@@ -169,6 +189,10 @@ Dialogue: 0,0:02:20.53,0:02:22.66,Default,,0000,0000,0000,,{\\fn华文楷体\\fs
       const authMsg = Formatters.toFriendlyError('WebDAV HTTP 401');
       expect(authMsg.includes('401')).assertFalse();
       expect(authMsg.includes('鉴权') || authMsg.includes('账号')).assertTrue();
+
+      const localAuth = Formatters.toFriendlyError('本机文件夹授权已失效，请重新选择文件夹');
+      expect(localAuth.includes('本机文件夹')).assertTrue();
+      expect(localAuth.includes('重新选择')).assertTrue();
     });
 
     it('parses_smb_and_plex_source_configs', 0, () => {

@@ -115,8 +115,14 @@ export function probeLocalMedia(_fd: number, _offset: number, _size: number): Lo
     width: 0,
     height: 0,
     title: '',
-    mimeType: ''
+    mimeType: '',
+    artist: '',
+    album: ''
   };
+}
+
+export function listDirectoryFd(_fd: number): string[] | null {
+  return null;
 }
 
 export async function smbTestConnection(_config: SmbNativeConfig, _initialPath?: string): Promise<SmbNativeTestResult> {

@@ -122,7 +122,11 @@ export struct SourcesView {
               }
             },
             {
-              value: '导入本机视频 / 音乐',
+              value: '从相册导入视频',
+              action: () => { this.store.importFromGallery(); }
+            },
+            {
+              value: '导入文件（视频 / 音乐）',
               action: () => { this.store.importLocalVideos(); }
             },
             {

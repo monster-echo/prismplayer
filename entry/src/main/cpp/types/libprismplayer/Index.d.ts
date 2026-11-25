@@ -127,6 +127,9 @@ export const setPlayerEventCallback: (playerId: number, callback: (event: Native
 
 export const probeLocalMedia: (fd: number, offset: number, size: number) => LocalMediaMeta;
 
+/** 通过已打开的目录 fd 列举文件名；非目录/无法枚举时返回 null。 */
+export const listDirectoryFd: (fd: number) => string[] | null;
+
 /** 查询本机是否有该 mime 的硬件视频解码器；supported=false 时应降级软解。 */
 export const queryVideoDecoderCapability: (mime: string) => VideoDecoderCapability;
 

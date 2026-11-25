@@ -415,7 +415,11 @@ export struct LibraryView {
               action: () => this.onGoSources()
             },
             {
-              value: '导入本机视频 / 音乐',
+              value: '从相册导入视频',
+              action: () => { this.store.importFromGallery(); }
+            },
+            {
+              value: '导入文件（视频 / 音乐）',
               action: () => { this.store.importLocalVideos(); }
             },
             {
@@ -569,31 +573,33 @@ export struct LibraryView {
             SymbolGlyph($r('sys.symbol.movie'))
               .fontSize(38)
               .fontColor([$r('app.color.text_muted')])
-            Text('暂无匹配的影视内容')
+            Text(this.category === 'all' ? '影库是空的' : '没有匹配的内容')
               .fontSize(16)
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_primary'))
-            Text('连接 NAS / 网盘自动刮削海报墙，或把本机文件夹加进影库')
-              .fontSize(13)
-              .fontColor($r('app.color.text_body_muted'))
-              .textAlign(TextAlign.Center)
-            Row({ space: 10 }) {
-              Button('添加 WebDAV / Alist')
-                .height(38)
+            if (this.category === 'all') {
+              Text('手机里的视频，或你自己的 NAS / 网盘')
                 .fontSize(13)
-                .fontColor(Color.White)
-                .backgroundColor($r('app.color.accent_blue'))
-                .borderRadius(10)
-                .onClick(() => this.onGoSources())
-              Button('添加本机文件夹')
-                .height(38)
-                .fontSize(13)
-                .fontColor($r('app.color.text_primary'))
-                .backgroundColor($r('app.color.bg_elevated'))
-                .borderRadius(10)
-                .onClick(() => {
-                  this.store.importLocalVideos();
-                })
+                .fontColor($r('app.color.text_body_muted'))
+                .textAlign(TextAlign.Center)
+              Row({ space: 10 }) {
+                Button('从相册导入视频')
+                  .height(38)
+                  .fontSize(13)
+                  .fontColor(Color.White)
+                  .backgroundColor($r('app.color.accent_blue'))
+                  .borderRadius(10)
+                  .onClick(() => {
+                    this.store.importFromGallery();
+                  })
+                Button('连接 NAS / 网盘')
+                  .height(38)
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_primary'))
+                  .backgroundColor($r('app.color.bg_elevated'))
+                  .borderRadius(10)
+                  .onClick(() => this.onGoSources())
+              }
             }
           }
           .width('100%')

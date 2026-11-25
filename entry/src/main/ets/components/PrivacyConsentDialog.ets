@@ -50,17 +50,17 @@ export struct PrivacyConsentDialog {
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
 
-          Text('1. 本应用定位为纯本地与用户自有私有云/WebDAV/NAS 协议播放器，绝不内置任何第三方影视源、爬虫或广告 SDK。')
+          Text('1. 不内置任何影视源；你主动选择的视频、音乐与相册内容只在本机读取，不会上传。')
             .fontSize(13)
             .lineHeight(20)
             .fontColor($r('app.color.text_secondary'))
 
-          Text('2. 您的 WebDAV/SMB 服务器地址与密码仅在设备本地通过系统 HUKS 硬件级加密存储，绝不会上传至开发者服务器。')
+          Text('2. 网络仅在你配置片源、刮削海报或搜索字幕时使用。')
             .fontSize(13)
             .lineHeight(20)
             .fontColor($r('app.color.text_secondary'))
 
-          Text('3. 网络权限（ohos.permission.INTERNET）仅在您主动访问所配置的 WebDAV/Alist 媒体源或主动启用 TMDB 海报刮削时使用。')
+          Text('3. 片源账号与密码由系统 HUKS 加密，只存在本机。')
             .fontSize(13)
             .lineHeight(20)
             .fontColor($r('app.color.text_secondary'))

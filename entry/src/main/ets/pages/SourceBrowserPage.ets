@@ -94,9 +94,19 @@ struct SourceBrowserPage {
     let acc = root === '/' ? '' : root;
     for (let i = 0; i < parts.length; i++) {
       acc = `${acc}/${parts[i]}`;
-      crumbs.push({ label: parts[i], path: acc });
+      // 本机目录的路径段是百分号编码的，面包屑只展示解码后的名字，路径仍用原串
+      const label = this.source.type === 'local' ? this.decodeSegment(parts[i]) : parts[i];
+      crumbs.push({ label: label, path: acc });
     }
     return crumbs;
+  }
+
+  private decodeSegment(segment: string): string {
+    try {
+      return decodeURIComponent(segment);
+    } catch (_e) {
+      return segment;
+    }
   }
 
   private getFilteredEntries(): RemoteFileEntry[] {

@@ -1,6 +1,6 @@
-Version 1.0.5
-- Local videos and music are indexed and read in place, never copied
-- Music now appears in All; albums merge across local and NAS sources
-- Play all movies, see 1/N, jump to the next title or open the queue
-- Local video posters and embedded audio covers are generated automatically
-- Fixes: playback error actions, stale Continue Watching entries, encoded local paths
+Version 1.0.6
+- Import videos from the system gallery via the empty state and menus
+- Fix local folders failing to open or importing 0 items
+- Fix runaway scanning when names contain # or other URI-reserved characters
+- Prompt to reselect when a local folder's permission has expired
+- Improve local folder listing, breadcrumbs, and error messages

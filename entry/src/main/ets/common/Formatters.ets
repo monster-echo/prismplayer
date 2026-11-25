@@ -299,6 +299,9 @@ export class Formatters {
   /** Converts raw network, WebDAV, or decoder error details into warm, actionable user-facing copy. */
   static toFriendlyError(raw: string, isRemotePlayback: boolean = false): string {
     const lower = (raw || '').toLowerCase();
+    if (lower.includes('授权已失效')) {
+      return '本机文件夹授权已失效，请在片源管理里重新选择。';
+    }
     if (lower.includes('401') || lower.includes('403') || lower.includes('unauth') ||
         lower.includes('signaturedoesnotmatch') || lower.includes('invalidaccesskeyid') || lower.includes('accessdenied') ||
         lower.includes('logon_failure') || lower.includes('无权访问') || lower.includes('token 无效')) {

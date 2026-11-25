@@ -2,6 +2,8 @@
 #include <hilog/log.h>
 #include <multimedia/player_framework/native_avcapability.h>
 #include <napi/native_api.h>
+#include <dirent.h>
+#include <unistd.h>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -9,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "metadata_probe.h"
 #include "player_engine.h"
@@ -585,6 +588,58 @@ napi_value ProbeLocalMedia(napi_env env, napi_callback_info info) {
     return obj;
 }
 
+/**
+ * 通过已打开目录的 fd 列举文件名。
+ *
+ * 用户经 Picker 授权的目录是 `file://docs/...` URI，而 fileIo.listFile 只接受沙箱路径，
+ * 直接把 URI 传给它会 ENOENT（13900002）。先用 fs.open(uri) 在授权范围内拿到目录 fd，
+ * 再在 native 侧 fdopendir/readdir，即可枚举；失败返回 null，调用方走原有回退。
+ */
+napi_value ListDirectoryFd(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t fd = -1;
+    if (argc < 1 || napi_get_value_int32(env, args[0], &fd) != napi_ok || fd < 0) {
+        napi_value nullValue;
+        napi_get_null(env, &nullValue);
+        return nullValue;
+    }
+
+    std::vector<std::string> names;
+    int dupFd = dup(fd);
+    if (dupFd < 0) {
+        napi_value nullValue;
+        napi_get_null(env, &nullValue);
+        return nullValue;
+    }
+    DIR* dir = fdopendir(dupFd);
+    if (dir == nullptr) {
+        close(dupFd);
+        napi_value nullValue;
+        napi_get_null(env, &nullValue);
+        return nullValue;
+    }
+    struct dirent* ent = nullptr;
+    while ((ent = readdir(dir)) != nullptr) {
+        const char* name = ent->d_name;
+        if (name == nullptr) continue;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        names.emplace_back(name);
+    }
+    closedir(dir);
+
+    napi_value arr;
+    napi_create_array_with_length(env, names.size(), &arr);
+    for (size_t i = 0; i < names.size(); i++) {
+        napi_value item;
+        napi_create_string_utf8(env, names[i].c_str(), NAPI_AUTO_LENGTH, &item);
+        napi_set_element(env, arr, static_cast<uint32_t>(i), item);
+    }
+    return arr;
+}
+
 // --- Async SMB2 NAPI Helpers ---
 prism::SmbConnectionConfig ReadSmbConfigArg(napi_env env, napi_value obj) {
     prism::SmbConnectionConfig cfg;
@@ -856,6 +911,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"getPlayerTracks", nullptr, GetPlayerTracks, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPlayerEventCallback", nullptr, SetPlayerEventCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"probeLocalMedia", nullptr, ProbeLocalMedia, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"listDirectoryFd", nullptr, ListDirectoryFd, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"queryVideoDecoderCapability", nullptr, QueryVideoDecoderCapability, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smbTestConnection", nullptr, SmbTestConnection, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smbListDirectory", nullptr, SmbListDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
