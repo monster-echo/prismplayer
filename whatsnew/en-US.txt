@@ -1,6 +1,6 @@
-Version 1.0.6
-- Import videos from the system gallery via the empty state and menus
-- Fix local folders failing to open or importing 0 items
-- Fix runaway scanning when names contain # or other URI-reserved characters
-- Prompt to reselect when a local folder's permission has expired
-- Improve local folder listing, breadcrumbs, and error messages
+Version 1.0.7
+- Dedicated pages for Movies, Series, Music, and Favorites; home shows the first 6 with More
+- New filters: source/year/quality for Movies, source/year for Series, type for Favorites, source for Music
+- Filters moved to the top-right with a content-sized sheet; quick sort stays on the page
+- Swipe between Folder and All Videos in Local; pull-to-refresh across lists
+- Removed redundant header refresh buttons
