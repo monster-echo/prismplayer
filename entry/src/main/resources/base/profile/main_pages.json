@@ -5,6 +5,7 @@
     "pages/MusicPlayerPage",
     "pages/MediaDetailPage",
     "pages/SearchPage",
+    "pages/LocalVideosPage",
     "pages/SourceBrowserPage",
     "pages/SourceFormPage",
     "pages/ProStorePage",

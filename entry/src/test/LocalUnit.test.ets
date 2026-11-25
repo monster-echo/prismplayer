@@ -6,6 +6,7 @@ import { DouyinClient } from '../main/ets/services/DouyinClient';
 import { EmbyClient, EmbySessionContext } from '../main/ets/services/EmbyClient';
 import { IptvClient } from '../main/ets/services/IptvClient';
 import { LocalFileClient } from '../main/ets/services/LocalFileClient';
+import { LocalFolderGroup, LocalVideoIndex } from '../main/ets/services/LocalVideoIndex';
 import { NfoParser } from '../main/ets/services/NfoParser';
 import { PlexClient } from '../main/ets/services/PlexClient';
 import { RemoteSourceClient } from '../main/ets/services/RemoteSourceClient';
@@ -408,5 +409,50 @@ https://cdn.example.com/cinema.mp4`;
       expect(Formatters.detectSubtitleLanguage('Movie.zh-CN.chs.ass', 3).label).assertEqual('中文');
       expect(Formatters.detectSubtitleLanguage('Movie.eng.srt', 4).label).assertEqual('英文');
     });
+
+    it('groups_and_sorts_local_videos_by_folder', 0, () => {
+      const root = 'file://docs/storage/Users/currentUser/Download';
+      const makeItem = (id: string, name: string, path: string, size: number, quality: string,
+        addedAt: number, mediaType: 'movie' | 'episode'): MediaItem => {
+        return {
+          id: id, sourceId: 'local_device', sourceType: 'local', remotePath: path,
+          streamUrl: path, fileName: name, fileSize: size, mediaType: mediaType,
+          seriesKey: id, seriesTitle: name, seasonNo: 1, episodeNo: 0, title: name,
+          originalTitle: '', year: 0, overview: '', posterUrl: '', backdropUrl: '',
+          rating: 0, qualityTag: quality, tmdbId: 0, durationMs: 60000,
+          subtitleUrl: '', addedAt: addedAt
+        };
+      };
+      const videos: MediaItem[] = [
+        makeItem('root', 'root.mp4', `${root}/root.mp4`, 100, '1080P', 1, 'movie'),
+        makeItem('a1', 'a.mp4', `${root}/A/a.mp4`, 100, '720P', 2, 'movie'),
+        makeItem('a2', 'b.mp4', `${root}/A/b.mp4`, 200, '2160P', 3, 'episode'),
+        makeItem('bc', 'c.mp4', `${root}/B%20C/c.mp4`, 50, '1080P', 4, 'movie')
+      ];
+
+      expect(LocalVideoIndex.folderPath(videos[0], root)).assertEqual('');
+      expect(LocalVideoIndex.folderPath(videos[2], root)).assertEqual('A');
+      expect(LocalVideoIndex.folderLabel('', root)).assertEqual('Download');
+      expect(LocalVideoIndex.folderPath(videos[3], root)).assertEqual('B C');
+
+      const groups = LocalVideoIndex.groupFolders(videos, root);
+      expect(groups.length).assertEqual(3);
+      let folderA: LocalFolderGroup | null = null;
+      let folderBc: LocalFolderGroup | null = null;
+      for (let i = 0; i < groups.length; i++) {
+        if (groups[i].path === 'A') folderA = groups[i];
+        if (groups[i].path === 'B C') folderBc = groups[i];
+      }
+      expect(folderA !== null).assertTrue();
+      expect(folderA!.items.length).assertEqual(2);
+      expect(folderA!.totalSize).assertEqual(300);
+      expect(folderBc !== null).assertTrue();
+      expect(folderBc!.name).assertEqual('B C');
+
+      const byResolution = LocalVideoIndex.sortVideos(videos, 'resolution');
+      expect(byResolution[0].id).assertEqual('a2');
+      expect(LocalVideoIndex.filterByType(videos, 'episode').length).assertEqual(1);
+    });
+
   });
 }

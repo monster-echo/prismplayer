@@ -231,7 +231,8 @@ struct Index {
         onOpenVault: () => this.pushRoute('pages/PrivacyVaultPage'),
         onPlayAlbum: (album: MusicAlbum) => this.playAlbum(album),
         onPlayMovieList: (items: MediaItem[]) => this.playMovieList(items),
-        onOpenMusicPlayer: () => this.pushRoute('pages/MusicPlayerPage')
+        onOpenMusicPlayer: () => this.pushRoute('pages/MusicPlayerPage'),
+        onOpenLocal: () => this.pushRoute('pages/LocalVideosPage')
       })
     } else if (this.activeTab === 1) {
       SourcesView({

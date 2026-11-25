@@ -1,4 +1,4 @@
-import { BreakpointType } from '../common/Constants';
+import { AppConstants, BreakpointType } from '../common/Constants';
 import { Formatters } from '../common/Formatters';
 import { Layout } from '../common/Layout';
 import { MediaArtwork } from '../common/MediaArtwork';
@@ -21,11 +21,43 @@ export struct LibraryView {
   @Param onPlayAlbum: (album: MusicAlbum) => void = () => {};
   @Param onPlayMovieList: (items: MediaItem[]) => void = () => {};
   @Param onOpenMusicPlayer: () => void = () => {};
+  /** 「查看全部」本机视频：独立页面 */
+  @Param onOpenLocal: () => void = () => {};
 
   @Local store: AppStore = AppStore.getInstance();
   @Local category: MediaCategory = 'all';
   @Local heroImgFailed: boolean = false;
   @Local refreshing: boolean = false;
+
+  private getLocalMovies(): MediaItem[] {
+    return this.store.getVisibleMediaItems().filter(it => it.mediaType === 'movie' && it.sourceType === 'local');
+  }
+
+  /** 本机横排只在混合影库出现；整个影库都是本机时电影网格已经完整，避免重复。 */
+  private hasNonLocalVideo(): boolean {
+    return this.store.getVisibleMediaItems().some(it => it.mediaType !== 'track' && it.sourceType !== 'local');
+  }
+
+  private movieSubtitle(item: MediaItem): string {
+    const base = item.year > 0 ? `${item.year}` : (item.qualityTag || '视频');
+    return item.sourceType === 'local' ? `本机 · ${base}` : base;
+  }
+
+  private seriesSubtitle(grp: SeriesGroup): string {
+    const base = grp.year > 0 ? `${grp.year}` : `${grp.episodes.length} 集`;
+    return grp.seriesKey.startsWith(`${AppConstants.LOCAL_SOURCE_ID}_`)
+      ? `本机 · ${grp.episodes.length} 集`
+      : base;
+  }
+
+  private headerSummary(): string {
+    if (this.store.isScanning) return this.store.scanStatusText;
+    if (this.category === 'music') {
+      return `${this.musicAlbumCount()} 张专辑 · ${this.musicTrackCount()} 首`;
+    }
+    return `${this.getFilteredMovies().length} 部电影 · ${this.getFilteredSeries().length} 部剧集` +
+      (this.musicTrackCount() > 0 ? ` · ${this.musicTrackCount()} 首音乐` : '');
+  }
 
   private getFilteredMovies(): MediaItem[] {
     if (this.category === 'tv' || this.category === 'music') return [];
@@ -66,7 +98,9 @@ export struct LibraryView {
       const found = visible.find(m => m.id === recent[0].itemId);
       if (found) return found;
     }
-    return visible[0];
+    // 默认不拿本机私人视频当「影库精选」；最近看过的本机视频仍可上焦点图
+    const nonLocal = visible.filter(it => it.sourceType !== 'local');
+    return nonLocal.length > 0 ? nonLocal[0] : visible[0];
   }
 
   private getProgressRatio(itemId: string): number {
@@ -95,14 +129,7 @@ export struct LibraryView {
                 .fontSize(21)
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.text_primary'))
-              Text(
-                this.store.isScanning
-                  ? this.store.scanStatusText
-                  : (this.category === 'music'
-                    ? `${this.musicAlbumCount()} 张专辑 · ${this.musicTrackCount()} 首`
-                    : `${this.getFilteredMovies().length} 部电影 · ${this.getFilteredSeries().length} 部剧集` +
-                      (this.musicTrackCount() > 0 ? ` · ${this.musicTrackCount()} 首音乐` : ''))
-              )
+              Text(this.headerSummary())
                 .fontSize(11)
                 .fontColor(this.store.isScanning ? $r('app.color.accent_blue') : $r('app.color.text_body_muted'))
                 .maxLines(1)
@@ -440,6 +467,57 @@ export struct LibraryView {
         }
         .width('100%')
 
+        // 本机视频 Rail：只在混合影库的「全部」出现；全是本机时电影网格已经完整
+        if (this.category === 'all' &&
+          this.getLocalMovies().length > 0 && this.hasNonLocalVideo()) {
+          Column({ space: 10 }) {
+            Row({ space: 8 }) {
+              Text('本机视频')
+                .fontSize(16)
+                .fontWeight(FontWeight.Bold)
+                .fontColor($r('app.color.text_primary'))
+              Text(`${this.getLocalMovies().length} 部`)
+                .fontSize(11)
+                .fontColor($r('app.color.text_body_muted'))
+              Blank()
+              Text('查看全部')
+                .fontSize(12)
+                .fontColor($r('app.color.accent_blue'))
+                .height(32)
+                .padding({ left: 10, right: 10 })
+                .borderRadius(16)
+                .onClick(() => this.onOpenLocal())
+            }
+            .width('100%')
+
+            Scroll() {
+              Row({ space: 12 }) {
+                ForEach(this.getLocalMovies().slice(0, 10), (item: MediaItem) => {
+                  Column() {
+                    PosterCard({
+                      title: item.title,
+                      subtitle: item.year > 0 ? `${item.year}` : (item.qualityTag || '视频'),
+                      posterUrl: item.posterUrl,
+                      qualityTag: item.qualityTag,
+                      rating: item.rating,
+                      progressRatio: this.getProgressRatio(item.id),
+                      onSelect: () => this.onOpenMovie(item),
+                      onPlay: () => this.onPlayDirect(item, this.resumeMs(item.id))
+                    })
+                  }
+                  .width(this.breakpoint === 'sm' ? 132 : 148)
+                }, (item: MediaItem) => item.id)
+              }
+            }
+            .scrollable(ScrollDirection.Horizontal)
+            .scrollBar(BarState.Off)
+            .edgeEffect(EdgeEffect.Spring)
+            .align(Alignment.TopStart)
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+        }
+
         // Music Section
         if (this.category === 'music') {
           MusicLibrary({
@@ -470,7 +548,7 @@ export struct LibraryView {
                 GridCol({ span: { xs: 4, sm: 3, md: 2, lg: 2 } }) {
                   PosterCard({
                     title: grp.title,
-                    subtitle: grp.year > 0 ? `${grp.year}` : `${grp.episodes.length} 集`,
+                    subtitle: this.seriesSubtitle(grp),
                     posterUrl: grp.posterUrl,
                     rating: grp.rating,
                     episodeCountLabel: `${grp.episodes.length} 集`,
@@ -523,7 +601,7 @@ export struct LibraryView {
                 GridCol({ span: { xs: 4, sm: 3, md: 2, lg: 2 } }) {
                   PosterCard({
                     title: item.title,
-                    subtitle: item.year > 0 ? `${item.year}` : item.qualityTag,
+                    subtitle: this.movieSubtitle(item),
                     posterUrl: item.posterUrl,
                     qualityTag: item.qualityTag,
                     rating: item.rating,
@@ -639,8 +717,13 @@ export struct LibraryView {
       .fontColor(this.category === value ? Color.White : $r('app.color.text_secondary'))
       .padding({ left: 15, right: 15, top: 7, bottom: 7 })
       .borderRadius(16)
-      .backgroundColor(this.category === value ? $r('app.color.accent_blue') : $r('app.color.bg_elevated'))
-      .border({ width: 0.8, color: this.category === value ? $r('app.color.accent_blue') : $r('app.color.fill_strong') })
+      .backgroundColor(this.category === value
+        ? $r('app.color.accent_blue') : $r('app.color.bg_elevated'))
+      .border({
+        width: 0.8,
+        color: this.category === value
+          ? $r('app.color.accent_blue') : $r('app.color.fill_strong')
+      })
       .onClick(() => {
         this.category = value;
       })
