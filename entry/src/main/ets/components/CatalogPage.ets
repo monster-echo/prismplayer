@@ -373,9 +373,7 @@ export struct CatalogPage {
       NavHeaderBar({
         title: this.title(),
         subtitle: this.subtitle(),
-        rightIcon: $r('sys.symbol.arrow_clockwise'),
-        onBack: () => this.getUIContext().getRouter().back(),
-        onRightAction: () => { this.refresh(); }
+        onBack: () => this.getUIContext().getRouter().back()
       })
 
       Column() {
@@ -499,9 +497,5 @@ export struct CatalogPage {
   private movieSubtitle(item: MediaItem): string {
     const base = item.year > 0 ? `${item.year}` : (item.qualityTag || '视频');
     return item.sourceType === 'local' ? `本机 · ${base}` : base;
-  }
-
-  private async refresh(): Promise<void> {
-    await this.store.reloadAllData();
   }
 }

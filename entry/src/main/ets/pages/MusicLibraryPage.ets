@@ -136,9 +136,7 @@ struct MusicLibraryPage {
       NavHeaderBar({
         title: '音乐',
         subtitle: this.subtitle(),
-        rightIcon: $r('sys.symbol.arrow_clockwise'),
-        onBack: () => this.getUIContext().getRouter().back(),
-        onRightAction: () => { this.refresh(); }
+        onBack: () => this.getUIContext().getRouter().back()
       })
 
       Column() {
@@ -193,9 +191,5 @@ struct MusicLibraryPage {
     .width('100%')
     .height('100%')
     .backgroundColor($r('app.color.bg_primary'))
-  }
-
-  private async refresh(): Promise<void> {
-    await this.store.reloadAllData();
   }
 }

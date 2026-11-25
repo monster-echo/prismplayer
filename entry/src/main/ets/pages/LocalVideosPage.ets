@@ -165,10 +165,6 @@ struct LocalVideosPage {
     await this.store.scanSource(src);
   }
 
-  private async refresh(): Promise<void> {
-    await this.store.reloadAllData();
-  }
-
   @Builder
   modeTab(label: string, value: LocalViewMode) {
     Text(label)
@@ -352,15 +348,13 @@ struct LocalVideosPage {
       NavHeaderBar({
         title: this.activeFolder !== null ? this.folderLabel(this.activeFolder) : '本机视频',
         subtitle: this.subtitle(),
-        rightIcon: $r('sys.symbol.arrow_clockwise'),
         onBack: () => {
           if (this.activeFolder !== null) {
             this.backToFolders();
           } else {
             this.getUIContext().getRouter().back();
           }
-        },
-        onRightAction: () => { this.refresh(); }
+        }
       })
 
       Column() {

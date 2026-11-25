@@ -241,12 +241,9 @@ struct SourceBrowserPage {
       NavHeaderBar({
         title: this.source ? this.source.name : '远程目录',
         subtitle: this.displayPath(),
-        rightIcon: $r('sys.symbol.arrow_clockwise'),
-        onBack: () => this.navigateBackOneLevel(),
-        onRightAction: () => this.loadDirectory(this.currentDirPath, false)
+        onBack: () => this.navigateBackOneLevel()
       })
 
-      Refresh({ refreshing: this.refreshing }) {
       Stack() {
         PageShell({ maxWidth: 1100 }) {
           Stack({ alignContent: Alignment.Top }) {
@@ -400,6 +397,7 @@ struct SourceBrowserPage {
                 .width('100%')
                 .padding({ top: 64 })
               } else {
+                Refresh({ refreshing: this.refreshing }) {
                 List({ space: 8 }) {
                   ForEach(this.getFilteredEntries(), (entry: RemoteFileEntry) => {
                     ListItem() {
@@ -496,9 +494,19 @@ struct SourceBrowserPage {
                     }
                   }, (entry: RemoteFileEntry) => entry.path)
                 }
+                .width('100%')
+                .height('100%')
+                .padding({ left: 18, right: 18, bottom: 20 })
+                }
                 .layoutWeight(1)
                 .width('100%')
-                .padding({ left: 18, right: 18, bottom: 20 })
+                .onRefreshing(async () => {
+                  this.refreshing = true;
+                  if (!this.loading) {
+                    await this.loadDirectory(this.currentDirPath, false);
+                  }
+                  this.refreshing = false;
+                })
               }
             }
             .width('100%')
@@ -565,16 +573,7 @@ struct SourceBrowserPage {
       .width('100%')
       .height('100%')
       .backgroundColor($r('app.color.bg_primary'))
-      }
-      .width('100%')
       .layoutWeight(1)
-      .onRefreshing(async () => {
-        this.refreshing = true;
-        if (!this.loading) {
-          await this.loadDirectory(this.currentDirPath, false);
-        }
-        this.refreshing = false;
-      })
     }
     .width('100%')
     .height('100%')
