@@ -1,11 +1,12 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { AppConstants } from '../main/ets/common/Constants';
 import { Formatters } from '../main/ets/common/Formatters';
-import { MediaItem, MediaSource, MediaSourceType } from '../main/ets/common/Types';
+import { MediaItem, MediaSource, MediaSourceType, SeriesGroup } from '../main/ets/common/Types';
 import { DouyinClient } from '../main/ets/services/DouyinClient';
 import { EmbyClient, EmbySessionContext } from '../main/ets/services/EmbyClient';
 import { IptvClient } from '../main/ets/services/IptvClient';
 import { LocalFileClient } from '../main/ets/services/LocalFileClient';
+import { LibraryCatalog } from '../main/ets/services/LibraryCatalog';
 import { LocalFolderGroup, LocalVideoIndex } from '../main/ets/services/LocalVideoIndex';
 import { NfoParser } from '../main/ets/services/NfoParser';
 import { PlexClient } from '../main/ets/services/PlexClient';
@@ -452,6 +453,54 @@ https://cdn.example.com/cinema.mp4`;
       const byResolution = LocalVideoIndex.sortVideos(videos, 'resolution');
       expect(byResolution[0].id).assertEqual('a2');
       expect(LocalVideoIndex.filterByType(videos, 'episode').length).assertEqual(1);
+    });
+
+    it('filters_and_sorts_catalog_movies_and_series', 0, () => {
+      const makeMovie = (id: string, title: string, year: number, rating: number, quality: string,
+        sourceId: string, sourceType: MediaSourceType, duration: number, addedAt: number): MediaItem => {
+        return {
+          id: id, sourceId: sourceId, sourceType: sourceType, remotePath: `/${id}.mp4`,
+          streamUrl: `https://x/${id}.mp4`, fileName: `${id}.mp4`, fileSize: 100,
+          mediaType: 'movie', seriesKey: id, seriesTitle: title, seasonNo: 1, episodeNo: 0,
+          title: title, originalTitle: '', year: year, overview: '', posterUrl: '', backdropUrl: '',
+          rating: rating, qualityTag: quality, tmdbId: 0, durationMs: duration,
+          subtitleUrl: '', addedAt: addedAt
+        };
+      };
+      const movies: MediaItem[] = [
+        makeMovie('m1', 'A', 2023, 7.5, '1080P', 'plex', 'plex', 100, 10),
+        makeMovie('m2', 'B', 2015, 8.7, '4K', AppConstants.LOCAL_SOURCE_ID, 'local', 200, 20),
+        makeMovie('m3', 'C', 0, 0, '720P', 'plex', 'plex', 50, 5)
+      ];
+
+      expect(LibraryCatalog.decadeOf(2024)).assertEqual('2020');
+      expect(LibraryCatalog.decadeOf(0)).assertEqual('unknown');
+      expect(LibraryCatalog.filterMovies(movies, 'plex', '1080', '2020').length).assertEqual(1);
+      expect(LibraryCatalog.filterMovies(movies, 'plex', '1080', '2020')[0].id).assertEqual('m1');
+      expect(LibraryCatalog.filterMovies(movies, '', '4k', 'all')[0].id).assertEqual('m2');
+      expect(LibraryCatalog.sortItems(movies, 'year')[0].id).assertEqual('m1');
+      expect(LibraryCatalog.sortItems(movies, 'rating')[0].id).assertEqual('m2');
+
+      const series: SeriesGroup[] = [
+        {
+          seriesKey: `${AppConstants.LOCAL_SOURCE_ID}_A`, title: 'A', posterUrl: '', backdropUrl: '',
+          overview: '', year: 2022, rating: 8, tmdbId: 0,
+          episodes: [
+            makeMovie('a1', 'A1', 2022, 8, '1080P', AppConstants.LOCAL_SOURCE_ID, 'local', 10, 100),
+            makeMovie('a2', 'A2', 2022, 8, '1080P', AppConstants.LOCAL_SOURCE_ID, 'local', 10, 90),
+            makeMovie('a3', 'A3', 2022, 8, '1080P', AppConstants.LOCAL_SOURCE_ID, 'local', 10, 80)
+          ]
+        },
+        {
+          seriesKey: 'plex_B', title: 'B', posterUrl: '', backdropUrl: '',
+          overview: '', year: 2020, rating: 9, tmdbId: 0,
+          episodes: [makeMovie('b1', 'B1', 2020, 9, '4K', 'plex', 'plex', 10, 50)]
+        }
+      ];
+      expect(LibraryCatalog.seriesSourceId(series[0])).assertEqual(AppConstants.LOCAL_SOURCE_ID);
+      expect(LibraryCatalog.sortSeries(series, 'episodes')[0].seriesKey).assertEqual(series[0].seriesKey);
+      expect(LibraryCatalog.filterSeries(series, AppConstants.LOCAL_SOURCE_ID, '2020').length).assertEqual(1);
+      expect(LibraryCatalog.filterSeries(series, 'plex', '2010').length).assertEqual(0);
     });
 
   });

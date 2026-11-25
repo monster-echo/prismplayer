@@ -17,6 +17,10 @@
     "pages/LegalDocPage",
     "pages/AboutPrivacyPage",
     "pages/PrivacyVaultPage",
-    "pages/OnlineMediaPage"
+    "pages/OnlineMediaPage",
+    "pages/MovieLibraryPage",
+    "pages/SeriesLibraryPage",
+    "pages/FavoritesPage",
+    "pages/MusicLibraryPage"
   ]
 }

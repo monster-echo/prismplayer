@@ -15,6 +15,10 @@ export struct MusicLibrary {
   @Param breakpoint: BreakpointType = 'sm';
   /** 首页「全部」里的精简版：只摆前几张专辑，不带正在播放和空态 */
   @Param compact: boolean = false;
+  /** 音乐独立页的片源筛选：空串 = 全部 */
+  @Param sourceId: string = '';
+  /** 音乐独立页排序：最近添加 / 专辑名 / 歌手 */
+  @Param sortMode: string = 'recent';
   @Param onPlayAlbum: (album: MusicAlbum) => void = () => {};
   @Param onOpenPlayer: () => void = () => {};
   @Param onImportFolder: () => void = () => {};
@@ -23,12 +27,34 @@ export struct MusicLibrary {
   @Local coverFailedKey: string = '';
 
   private albums(): MusicAlbum[] {
-    const all = this.store.getMusicAlbums();
+    let all = this.store.getMusicAlbums();
+    if (this.sourceId) {
+      all = all.filter((album: MusicAlbum) =>
+        album.tracks.length > 0 && album.tracks[0].sourceId === this.sourceId);
+    }
+    if (this.sortMode === 'name') {
+      all.sort((a: MusicAlbum, b: MusicAlbum) => a.album.localeCompare(b.album, 'zh-CN'));
+    } else if (this.sortMode === 'artist') {
+      all.sort((a: MusicAlbum, b: MusicAlbum) => a.artist.localeCompare(b.artist, 'zh-CN'));
+    } else {
+      all.sort((a: MusicAlbum, b: MusicAlbum) => MusicLibrary.latestAt(b) - MusicLibrary.latestAt(a));
+    }
     return this.compact ? all.slice(0, 4) : all;
   }
 
+  private static latestAt(album: MusicAlbum): number {
+    let latest = 0;
+    for (let i = 0; i < album.tracks.length; i++) {
+      latest = Math.max(latest, album.tracks[i].addedAt || 0);
+    }
+    return latest;
+  }
+
   private totalTracks(): number {
-    return this.store.getMusicTracks().length;
+    const albums = this.albums();
+    let count = 0;
+    for (let i = 0; i < albums.length; i++) count += albums[i].tracks.length;
+    return count;
   }
 
   private isAlbumPlaying(album: MusicAlbum): boolean {
@@ -164,7 +190,7 @@ export struct MusicLibrary {
         .onClick(() => this.onOpenPlayer())
       }
 
-      if (!this.compact && this.store.getMusicAlbums().length === 0) {
+      if (!this.compact && this.albums().length === 0) {
         Column({ space: 12 }) {
           SymbolGlyph($r('sys.symbol.music_note_list'))
             .fontSize(38)
@@ -195,7 +221,7 @@ export struct MusicLibrary {
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_primary'))
             Blank()
-            Text(`${this.store.getMusicAlbums().length} 张 · ${this.totalTracks()} 首`)
+            Text(`${this.albums().length} 张 · ${this.totalTracks()} 首`)
               .fontSize(11)
               .fontColor($r('app.color.text_body_muted'))
           }

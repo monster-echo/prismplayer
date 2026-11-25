@@ -232,7 +232,19 @@ struct Index {
         onPlayAlbum: (album: MusicAlbum) => this.playAlbum(album),
         onPlayMovieList: (items: MediaItem[]) => this.playMovieList(items),
         onOpenMusicPlayer: () => this.pushRoute('pages/MusicPlayerPage'),
-        onOpenLocal: () => this.pushRoute('pages/LocalVideosPage')
+        onOpenLibrary: (target: string) => {
+          if (target === 'movie') {
+            this.pushRoute('pages/MovieLibraryPage');
+          } else if (target === 'tv') {
+            this.pushRoute('pages/SeriesLibraryPage');
+          } else if (target === 'music') {
+            this.pushRoute('pages/MusicLibraryPage');
+          } else if (target === 'local') {
+            this.pushRoute('pages/LocalVideosPage');
+          } else if (target === 'favorite') {
+            this.pushRoute('pages/FavoritesPage');
+          }
+        }
       })
     } else if (this.activeTab === 1) {
       SourcesView({

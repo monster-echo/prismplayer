@@ -3,7 +3,7 @@ import { Formatters } from '../common/Formatters';
 import { Layout } from '../common/Layout';
 import { MediaArtwork } from '../common/MediaArtwork';
 import { appMenuOptions } from '../common/MenuSurface';
-import { MediaCategory, MediaItem, MusicAlbum, SeriesGroup, WatchHistoryRecord } from '../common/Types';
+import { MediaItem, MusicAlbum, SeriesGroup, WatchHistoryRecord } from '../common/Types';
 import { MusicLibrary } from '../components/MusicLibrary';
 import { PosterCard } from '../components/PosterCard';
 import { AppStore } from '../services/AppStore';
@@ -21,30 +21,22 @@ export struct LibraryView {
   @Param onPlayAlbum: (album: MusicAlbum) => void = () => {};
   @Param onPlayMovieList: (items: MediaItem[]) => void = () => {};
   @Param onOpenMusicPlayer: () => void = () => {};
-  /** 「查看全部」本机视频：独立页面 */
-  @Param onOpenLocal: () => void = () => {};
+  /** 打开分类独立页：movie / tv / music / local / favorite */
+  @Param onOpenLibrary: (target: string) => void = () => {};
 
   @Local store: AppStore = AppStore.getInstance();
-  @Local category: MediaCategory = 'all';
   @Local heroImgFailed: boolean = false;
   @Local refreshing: boolean = false;
   private scroller: Scroller = new Scroller();
   /** 首页每个分类只露前 N 个，完整列表在分类 chip 页 */
   private homeLimit: number = 6;
 
-  private setCategory(value: MediaCategory): void {
-    this.category = value;
-    this.scroller.scrollTo({ xOffset: 0, yOffset: 0 });
-  }
-
   private homeMovies(): MediaItem[] {
-    const all = this.getFilteredMovies();
-    return this.category === 'all' ? all.slice(0, this.homeLimit) : all;
+    return this.getFilteredMovies().slice(0, this.homeLimit);
   }
 
   private homeSeries(): SeriesGroup[] {
-    const all = this.getFilteredSeries();
-    return this.category === 'all' ? all.slice(0, this.homeLimit) : all;
+    return this.getFilteredSeries().slice(0, this.homeLimit);
   }
 
   private getLocalMovies(): MediaItem[] {
@@ -70,32 +62,15 @@ export struct LibraryView {
 
   private headerSummary(): string {
     if (this.store.isScanning) return this.store.scanStatusText;
-    if (this.category === 'music') {
-      return `${this.musicAlbumCount()} 张专辑 · ${this.musicTrackCount()} 首`;
-    }
-    if (this.category === 'movie') return `${this.getFilteredMovies().length} 部电影`;
-    if (this.category === 'tv') return `${this.getFilteredSeries().length} 部剧集`;
-    if (this.category === 'favorite') return `${this.getFilteredMovies().length} 部收藏`;
-    if (this.category === 'private') return `${this.getFilteredMovies().length} 部私密`;
     return `${this.getFilteredMovies().length} 部电影 · ${this.getFilteredSeries().length} 部剧集` +
       (this.musicTrackCount() > 0 ? ` · ${this.musicTrackCount()} 首音乐` : '');
   }
 
   private getFilteredMovies(): MediaItem[] {
-    if (this.category === 'tv' || this.category === 'music') return [];
-    if (this.category === 'favorite') {
-      return this.store.getFavoriteMediaItems().filter(it => it.mediaType !== 'track');
-    }
-    if (this.category === 'private') {
-      return this.store.getHiddenMediaItems().filter(it => it.mediaType !== 'track');
-    }
     return this.store.getVisibleMediaItems().filter(it => it.mediaType === 'movie');
   }
 
   private getFilteredSeries(): SeriesGroup[] {
-    if (this.category === 'movie' || this.category === 'favorite' || this.category === 'private' || this.category === 'music') {
-      return [];
-    }
     return this.store.getSeriesGroups();
   }
 
@@ -184,7 +159,7 @@ export struct LibraryView {
         Scroll(this.scroller) {
           Column({ space: 20 }) {
         // Hero Cinema Spotlight Banner
-        if (this.category === 'all' && this.getHeroItem() !== null) {
+        if (this.getHeroItem() !== null) {
           Stack({ alignContent: Alignment.BottomStart }) {
             if ((this.getHeroItem()!.backdropUrl || this.getHeroItem()!.posterUrl) && !this.heroImgFailed) {
               Image(MediaArtwork.resolve(this.getHeroItem()!.backdropUrl || this.getHeroItem()!.posterUrl))
@@ -329,7 +304,7 @@ export struct LibraryView {
         }
 
         // Continue Watching Rail
-        if (this.category === 'all' && this.getContinueWatching().length > 0) {
+        if (this.getContinueWatching().length > 0) {
           Column({ space: 10 }) {
             Text('继续观看')
               .fontSize(16)
@@ -429,18 +404,16 @@ export struct LibraryView {
           .alignItems(HorizontalAlign.Start)
         }
 
-        // Category Filter Chips + Secondary More Menu
+        // 分类入口 + 管理菜单：分类都进独立页，首页只做「全部」的发现流
         Row({ space: 8 }) {
           Scroll() {
-            Row({ space: 8 }) {
-              this.filterChip('全部', 'all')
-              this.filterChip('电影', 'movie')
-              this.filterChip('剧集', 'tv')
-              this.filterChip('音乐', 'music')
-              this.filterChip('收藏', 'favorite')
-              if (this.store.vaultUnlocked) {
-                this.filterChip('私密', 'private')
-              }
+            Row({ space: 6 }) {
+              this.navChip('全部', 'all', true)
+              this.navChip('电影', 'movie', false)
+              this.navChip('剧集', 'tv', false)
+              this.navChip('音乐', 'music', false)
+              this.navChip('本地', 'local', false)
+              this.navChip('收藏', 'favorite', false)
             }
           }
           .scrollable(ScrollDirection.Horizontal)
@@ -489,9 +462,8 @@ export struct LibraryView {
         }
         .width('100%')
 
-        // 本机视频 Rail：只在混合影库的「全部」出现；全是本机时电影网格已经完整
-        if (this.category === 'all' &&
-          this.getLocalMovies().length > 0 && this.hasNonLocalVideo()) {
+        // 本机视频 Rail：只在混合影库出现；全是本机时电影网格已经完整
+        if (this.getLocalMovies().length > 0 && this.hasNonLocalVideo()) {
           Column({ space: 10 }) {
             Row({ space: 8 }) {
               Text('本机视频')
@@ -508,7 +480,7 @@ export struct LibraryView {
                 .height(32)
                 .padding({ left: 10, right: 10 })
                 .borderRadius(16)
-                .onClick(() => this.onOpenLocal())
+                .onClick(() => this.onOpenLibrary('local'))
             }
             .width('100%')
 
@@ -540,16 +512,6 @@ export struct LibraryView {
           .alignItems(HorizontalAlign.Start)
         }
 
-        // Music Section
-        if (this.category === 'music') {
-          MusicLibrary({
-            breakpoint: this.breakpoint,
-            onPlayAlbum: (album: MusicAlbum) => this.onPlayAlbum(album),
-            onOpenPlayer: () => this.onOpenMusicPlayer(),
-            onImportFolder: () => { this.store.importLocalFolder(); }
-          })
-        }
-
         // Series Section
         if (this.getFilteredSeries().length > 0) {
           Column({ space: 10 }) {
@@ -559,8 +521,8 @@ export struct LibraryView {
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.text_primary'))
               Blank()
-              if (this.category === 'all' && this.getFilteredSeries().length > this.homeLimit) {
-                this.moreLink(() => this.setCategory('tv'))
+              if (this.getFilteredSeries().length > this.homeLimit) {
+                this.moreLink(() => this.onOpenLibrary('tv'))
               }
             }
             .width('100%')
@@ -605,18 +567,8 @@ export struct LibraryView {
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.text_primary'))
               Blank()
-              if (this.category === 'movie' && this.getFilteredMovies().length > 1) {
-                Text('播放全部')
-                  .fontSize(12)
-                  .fontColor($r('app.color.accent_blue'))
-                  .height(32)
-                  .padding({ left: 12, right: 12 })
-                  .borderRadius(16)
-                  .backgroundColor($r('app.color.fill_subtle'))
-                  .onClick(() => this.onPlayMovieList(this.getFilteredMovies()))
-              }
-              if (this.category === 'all' && this.getFilteredMovies().length > this.homeLimit) {
-                this.moreLink(() => this.setCategory('movie'))
+              if (this.getFilteredMovies().length > this.homeLimit) {
+                this.moreLink(() => this.onOpenLibrary('movie'))
               }
             }
             .width('100%')
@@ -651,7 +603,7 @@ export struct LibraryView {
         }
 
         // 全部里的音乐：只摆前几张专辑，完整列表在「音乐」分类
-        if (this.category === 'all' && this.musicAlbumCount() > 0) {
+        if (this.musicAlbumCount() > 0) {
           Column({ space: 10 }) {
             Row() {
               Text('音乐')
@@ -663,7 +615,7 @@ export struct LibraryView {
                 Text(`${this.musicAlbumCount()} 张 · ${this.musicTrackCount()} 首`)
                   .fontSize(11)
                   .fontColor($r('app.color.text_body_muted'))
-                this.moreLink(() => this.setCategory('music'))
+                this.moreLink(() => this.onOpenLibrary('music'))
               }
             }
             .width('100%')
@@ -680,39 +632,37 @@ export struct LibraryView {
           .alignItems(HorizontalAlign.Start)
         }
 
-        if (this.category !== 'music' && this.getFilteredMovies().length === 0 &&
-          this.getFilteredSeries().length === 0 && !(this.category === 'all' && this.musicAlbumCount() > 0)) {
+        if (this.getFilteredMovies().length === 0 && this.getFilteredSeries().length === 0 &&
+          this.musicAlbumCount() === 0) {
           Column({ space: 12 }) {
             SymbolGlyph($r('sys.symbol.movie'))
               .fontSize(38)
               .fontColor([$r('app.color.text_muted')])
-            Text(this.category === 'all' ? '影库是空的' : '没有匹配的内容')
+            Text('影库是空的')
               .fontSize(16)
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_primary'))
-            if (this.category === 'all') {
-              Text('手机里的视频，或你自己的 NAS / 网盘')
+            Text('手机里的视频，或你自己的 NAS / 网盘')
+              .fontSize(13)
+              .fontColor($r('app.color.text_body_muted'))
+              .textAlign(TextAlign.Center)
+            Row({ space: 10 }) {
+              Button('从相册导入视频')
+                .height(38)
                 .fontSize(13)
-                .fontColor($r('app.color.text_body_muted'))
-                .textAlign(TextAlign.Center)
-              Row({ space: 10 }) {
-                Button('从相册导入视频')
-                  .height(38)
-                  .fontSize(13)
-                  .fontColor(Color.White)
-                  .backgroundColor($r('app.color.accent_blue'))
-                  .borderRadius(10)
-                  .onClick(() => {
-                    this.store.importFromGallery();
-                  })
-                Button('连接 NAS / 网盘')
-                  .height(38)
-                  .fontSize(13)
-                  .fontColor($r('app.color.text_primary'))
-                  .backgroundColor($r('app.color.bg_elevated'))
-                  .borderRadius(10)
-                  .onClick(() => this.onGoSources())
-              }
+                .fontColor(Color.White)
+                .backgroundColor($r('app.color.accent_blue'))
+                .borderRadius(10)
+                .onClick(() => {
+                  this.store.importFromGallery();
+                })
+              Button('连接 NAS / 网盘')
+                .height(38)
+                .fontSize(13)
+                .fontColor($r('app.color.text_primary'))
+                .backgroundColor($r('app.color.bg_elevated'))
+                .borderRadius(10)
+                .onClick(() => this.onGoSources())
             }
           }
           .width('100%')
@@ -757,20 +707,24 @@ export struct LibraryView {
   }
 
   @Builder
-  filterChip(label: string, value: MediaCategory) {
+  navChip(label: string, target: string, active: boolean) {
     Text(label)
-      .fontSize(13)
-      .fontWeight(this.category === value ? FontWeight.Bold : FontWeight.Normal)
-      .fontColor(this.category === value ? Color.White : $r('app.color.text_secondary'))
-      .padding({ left: 15, right: 15, top: 7, bottom: 7 })
-      .borderRadius(16)
-      .backgroundColor(this.category === value
-        ? $r('app.color.accent_blue') : $r('app.color.bg_elevated'))
+      .fontSize(11)
+      .fontWeight(active ? FontWeight.Bold : FontWeight.Normal)
+      .fontColor(active ? Color.White : $r('app.color.text_secondary'))
+      .padding({ left: 9, right: 9, top: 7, bottom: 7 })
+      .borderRadius(13)
+      .backgroundColor(active ? $r('app.color.accent_blue') : $r('app.color.bg_elevated'))
       .border({
         width: 0.8,
-        color: this.category === value
-          ? $r('app.color.accent_blue') : $r('app.color.fill_strong')
+        color: active ? $r('app.color.accent_blue') : $r('app.color.fill_strong')
       })
-      .onClick(() => this.setCategory(value))
+      .onClick(() => {
+        if (target === 'all') {
+          this.scroller.scrollTo({ xOffset: 0, yOffset: 0 });
+          return;
+        }
+        this.onOpenLibrary(target);
+      })
   }
 }
