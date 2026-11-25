@@ -165,6 +165,14 @@ struct LocalVideosPage {
     await this.store.scanSource(src);
   }
 
+  private switchMode(next: LocalViewMode): void {
+    if (this.mode === next) return;
+    this.mode = next;
+    this.activeFolder = null;
+    this.typeFilter = 'all';
+    this.scroller.scrollTo({ xOffset: 0, yOffset: 0 });
+  }
+
   @Builder
   modeTab(label: string, value: LocalViewMode) {
     Text(label)
@@ -178,11 +186,7 @@ struct LocalVideosPage {
         width: 0.8,
         color: this.mode === value ? $r('app.color.accent_blue') : $r('app.color.border_subtle')
       })
-      .onClick(() => {
-        this.mode = value;
-        this.activeFolder = null;
-        this.typeFilter = 'all';
-      })
+      .onClick(() => this.switchMode(value))
   }
 
   @Builder
@@ -451,6 +455,18 @@ struct LocalVideosPage {
           .align(Alignment.Top)
           .scrollBar(BarState.Off)
           .edgeEffect(EdgeEffect.Spring)
+          .gesture(
+            PanGesture({ direction: PanDirection.Horizontal, distance: 24 })
+              .onActionEnd((event: GestureEvent) => {
+                // 文件夹 / 全部视频 是同级视图，左右划直接切换
+                if (this.activeFolder !== null) return;
+                if (event.offsetX <= -60 && this.mode === 'folders') {
+                  this.switchMode('videos');
+                } else if (event.offsetX >= 60 && this.mode === 'videos') {
+                  this.switchMode('folders');
+                }
+              })
+          )
         }
         .width('100%')
         .height('100%')
