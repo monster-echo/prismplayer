@@ -137,6 +137,12 @@ export struct CatalogPage {
     return count > 0 ? `筛选 · ${count}` : '筛选';
   }
 
+  private resultLabel(): string {
+    const count = this.visibleCount();
+    if (count === 0) return '完成';
+    return this.kind === 'favorite' ? `查看 ${count} 项` : `查看 ${count} 部`;
+  }
+
   private sortLabel(): string {
     if (this.sort === 'name') return '名称';
     if (this.sort === 'year') return '年份';
@@ -297,75 +303,91 @@ export struct CatalogPage {
 
   @Builder
   filterSheet() {
-    Scroll() {
-      Column({ space: 16 }) {
-        if (this.kind === 'favorite') {
-          this.sectionTitle('类型')
-          Flex({ wrap: FlexWrap.Wrap }) {
-            this.typeOption('all', '全部')
-            this.typeOption('movie', '电影')
-            this.typeOption('episode', '剧集')
-          }
-        } else {
-          this.sectionTitle('年份')
-          Flex({ wrap: FlexWrap.Wrap }) {
-            this.decadeOption('all', '全部')
-            this.decadeOption('2020', '2020 以后')
-            this.decadeOption('2010', '2010–2019')
-            this.decadeOption('2000', '2000–2009')
-            this.decadeOption('older', '更早')
-            this.decadeOption('unknown', '未知')
-          }
-        }
+    Column() {
+      Row()
+        .width(36)
+        .height(4)
+        .borderRadius(2)
+        .backgroundColor($r('app.color.fill_strong'))
+        .alignSelf(ItemAlign.Center)
+        .margin({ top: 8, bottom: 4 })
 
-        if (this.kind === 'movie') {
-          this.sectionTitle('画质')
-          Flex({ wrap: FlexWrap.Wrap }) {
-            this.resolutionOption('all', '全部')
-            this.resolutionOption('4k', '4K')
-            this.resolutionOption('1080', '1080P')
-            this.resolutionOption('720', '720P')
-            this.resolutionOption('other', '其他')
-          }
-        }
-
-        if (this.usedSources().length > 1) {
-          this.sectionTitle('片源')
-          Flex({ wrap: FlexWrap.Wrap }) {
-            this.sourceOption('', '全部片源')
-            ForEach(this.usedSources(), (src: SourceChoice) => {
-              this.sourceOption(src.id, src.name)
-            }, (src: SourceChoice) => src.id)
-          }
-        }
-
-        Row({ space: 10 }) {
-          Button('重置筛选')
-            .layoutWeight(1)
-            .height(40)
+      Row() {
+        Text('筛选')
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+        Blank()
+        if (this.activeFilterCount() > 0) {
+          Text('重置')
             .fontSize(13)
-            .fontColor($r('app.color.text_primary'))
-            .backgroundColor($r('app.color.bg_secondary'))
-            .borderRadius(10)
+            .fontColor($r('app.color.accent_blue'))
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
             .onClick(() => this.resetFilters())
-          Button('完成')
-            .layoutWeight(1)
-            .height(40)
-            .fontSize(13)
-            .fontColor(Color.White)
-            .backgroundColor($r('app.color.accent_blue'))
-            .borderRadius(10)
-            .onClick(() => { this.showFilterSheet = false; })
         }
-        .width('100%')
-        .margin({ top: 4 })
       }
-      .padding({ left: 20, right: 20, top: 16, bottom: 24 })
       .width('100%')
+      .padding({ left: 20, right: 20, top: 2, bottom: 10 })
+
+      Column({ space: 18 }) {
+          if (this.kind === 'favorite') {
+            this.sectionTitle('类型')
+            Flex({ wrap: FlexWrap.Wrap }) {
+              this.typeOption('all', '全部')
+              this.typeOption('movie', '电影')
+              this.typeOption('episode', '剧集')
+            }
+          } else {
+            this.sectionTitle('年份')
+            Flex({ wrap: FlexWrap.Wrap }) {
+              this.decadeOption('all', '全部')
+              this.decadeOption('2020', '2020 以后')
+              this.decadeOption('2010', '2010–2019')
+              this.decadeOption('2000', '2000–2009')
+              this.decadeOption('older', '更早')
+              this.decadeOption('unknown', '未知')
+            }
+          }
+
+          if (this.kind === 'movie') {
+            this.sectionTitle('画质')
+            Flex({ wrap: FlexWrap.Wrap }) {
+              this.resolutionOption('all', '全部')
+              this.resolutionOption('4k', '4K')
+              this.resolutionOption('1080', '1080P')
+              this.resolutionOption('720', '720P')
+              this.resolutionOption('other', '其他')
+            }
+          }
+
+          if (this.usedSources().length > 1) {
+            this.sectionTitle('片源')
+            Flex({ wrap: FlexWrap.Wrap }) {
+              this.sourceOption('', '全部片源')
+              ForEach(this.usedSources(), (src: SourceChoice) => {
+                this.sourceOption(src.id, src.name)
+              }, (src: SourceChoice) => src.id)
+            }
+          }
+        }
+        .padding({ left: 20, right: 20, bottom: 12 })
+        .width('100%')
+
+      Row() {
+        Button(this.resultLabel())
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Color.White)
+          .backgroundColor($r('app.color.accent_blue'))
+          .borderRadius(12)
+          .onClick(() => { this.showFilterSheet = false; })
+      }
+      .width('100%')
+      .padding({ left: 20, right: 20, top: 8, bottom: 16 })
     }
     .width('100%')
-    .height('100%')
-    .scrollBar(BarState.Off)
   }
 
   @Builder
@@ -517,9 +539,9 @@ export struct CatalogPage {
     .height('100%')
     .backgroundColor($r('app.color.bg_primary'))
     .bindSheet(this.showFilterSheet, this.filterSheet(), {
-      height: 460,
+      height: SheetSize.FIT_CONTENT,
       dragBar: false,
-      title: { title: '筛选' },
+      showClose: false,
       preferType: this.store.currentBreakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       width: this.store.currentBreakpoint === 'sm' ? undefined : 520,
       backgroundColor: $r('app.color.bg_elevated'),
