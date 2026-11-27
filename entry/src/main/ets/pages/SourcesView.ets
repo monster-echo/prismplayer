@@ -56,7 +56,7 @@ export struct SourcesView {
   /** 本机片源还没选目录时，「浏览」先引导选文件夹，避免打开空目录。 */
   private openOrPickFolder(src: MediaSource): void {
     if (src.type === 'local' && !src.rootPath) {
-      this.store.importLocalFolder();
+      this.store.pickLocalMedia();
       return;
     }
     this.onBrowseSource(src);
@@ -130,8 +130,8 @@ export struct SourcesView {
               action: () => { this.store.importLocalVideos(); }
             },
             {
-              value: '添加本机文件夹',
-              action: () => { this.store.importLocalFolder(); }
+              value: '添加本机视频 / 文件夹',
+              action: () => { this.store.pickLocalMedia(); }
             }
           ], appMenuOptions())
         }
@@ -190,7 +190,7 @@ export struct SourcesView {
               .borderRadius(10)
               .onClick(() => this.onOpenEditor(null))
 
-              Button('添加本机文件夹')
+              Button('添加本机视频')
                 .height(40)
                 .padding({ left: 16, right: 16 })
                 .fontSize(13)
@@ -198,7 +198,7 @@ export struct SourcesView {
                 .backgroundColor($r('app.color.bg_secondary'))
                 .borderRadius(10)
                 .border({ width: 0.7, color: $r('app.color.fill_strong') })
-                .onClick(() => { this.store.importLocalFolder(); })
+                .onClick(() => { this.store.pickLocalMedia(); })
             }
           }
           .width('100%')
@@ -279,7 +279,7 @@ export struct SourcesView {
                   Button() {
                     Row({ space: 5 }) {
                       SymbolGlyph($r('sys.symbol.folder_fill')).fontSize(13).fontColor([Color.White])
-                      Text(src.type === 'local' && !src.rootPath ? '选文件夹' : '浏览').fontSize(12).fontColor(Color.White)
+                      Text(src.type === 'local' && !src.rootPath ? '添加视频' : '浏览').fontSize(12).fontColor(Color.White)
                     }
                   }
                   .height(34)
@@ -316,8 +316,8 @@ export struct SourcesView {
                   .backgroundColor($r('app.color.bg_secondary'))
                   .bindMenu(src.type === 'local' ? [
                     {
-                      value: '更换本机文件夹',
-                      action: () => { this.store.importLocalFolder(); }
+                      value: src.rootPath ? '更换本机文件夹' : '添加本机视频 / 文件夹',
+                      action: () => { this.store.pickLocalMedia(); }
                     },
                     {
                       value: this.probingSourceId === src.id ? '检测中...' : '检测授权是否有效',

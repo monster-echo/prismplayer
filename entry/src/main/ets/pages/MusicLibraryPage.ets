@@ -159,7 +159,7 @@ struct MusicLibraryPage {
                   sortMode: this.sortMode,
                   onPlayAlbum: (album: MusicAlbum) => this.playAlbum(album),
                   onOpenPlayer: () => this.getUIContext().getRouter().pushUrl({ url: 'pages/MusicPlayerPage' }),
-                  onImportFolder: () => { this.store.importLocalFolder(); }
+                  onImportFolder: () => { this.store.pickLocalMedia(); }
                 })
               }
               .padding({

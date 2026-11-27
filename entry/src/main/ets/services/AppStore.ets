@@ -1312,17 +1312,68 @@ export class AppStore {
     return imported;
   }
 
+  /** 手机系统常常不支持选文件夹；引导到可用的「选视频文件」。 */
+  private async showFolderFallback(): Promise<void> {
+    if (!this.context) return;
+    const res = await promptAction.showDialog({
+      title: '当前设备不支持选择文件夹',
+      message: '可以改用「选择视频文件」一次导入多个视频或音乐；文件夹扫描仅部分平板 / 电脑支持。',
+      buttons: [
+        { text: '选择视频文件', color: '#3B82F6' },
+        { text: '取消', color: '#6B7280' }
+      ]
+    });
+    if (res.index === 0) await this.importLocalVideos();
+  }
+
+  /**
+   * 添加本机内容：手机优先给「选择视频文件」，平板/电脑再给「选择文件夹」。
+   * 避免用户点「添加本机文件夹」后只看到系统的「功能暂不支持」。
+   */
+  async pickLocalMedia(): Promise<void> {
+    if (!this.context) return;
+    if (!canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection')) {
+      await this.showFolderFallback();
+      return;
+    }
+    const res = await promptAction.showDialog({
+      title: '添加本机内容',
+      message: '选择视频文件可直接导入；选择文件夹会扫描整个目录，部分手机系统不支持。',
+      buttons: [
+        { text: '选择视频文件', color: '#3B82F6' },
+        { text: '选择文件夹', color: '#3B82F6' },
+        { text: '取消', color: '#6B7280' }
+      ]
+    });
+    if (res.index === 0) {
+      await this.importLocalVideos();
+    } else if (res.index === 1) {
+      await this.importLocalFolder();
+    }
+  }
+
   /**
    * 选一个文件夹作为「本机存储」片源：记住根目录，随后走与 NAS 相同的扫描流程。
    * 手机上没有全盘扫描权限，这是唯一可行的批量方式。
    */
   async importLocalFolder(): Promise<MediaItem[]> {
     if (!this.context) return [];
+    if (!canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection')) {
+      await this.showFolderFallback();
+      return [];
+    }
     const docPicker = new picker.DocumentViewPicker(this.context);
     const opts = new picker.DocumentSelectOptions();
     opts.selectMode = picker.DocumentSelectMode.FOLDER;
     opts.maxSelectNumber = 1;
-    const dirs = await docPicker.select(opts);
+    let dirs: string[] = [];
+    try {
+      dirs = await docPicker.select(opts);
+    } catch (e) {
+      hilog.warn(0x0001, 'PrismLocal', 'folder picker failed: %{public}s', JSON.stringify(e));
+      await this.showFolderFallback();
+      return [];
+    }
     if (!dirs || dirs.length === 0) return [];
 
     const dir = dirs[0];

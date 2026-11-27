@@ -14,6 +14,7 @@ struct PrivacyVaultPage {
   @Local statusText: string = '';
   @Local isError: boolean = false;
   @Local showChangePattern: boolean = false;
+  @Local patternDrawing: boolean = false;
   @Local changeStage: ChangeStage = 'old';
   @Local newPattern: string = '';
   @Local busy: boolean = false;
@@ -131,7 +132,8 @@ struct PrivacyVaultPage {
       PatternPad({
         padSize: 250,
         onComplete: (pattern: string) => { this.onPattern(pattern); },
-        onInvalid: (message: string) => { this.showStatus(message, true); }
+        onInvalid: (message: string) => { this.showStatus(message, true); },
+        onDrawingChange: (drawing: boolean) => { this.patternDrawing = drawing; }
       })
       if (this.statusText) {
         Text(this.statusText)
@@ -285,6 +287,7 @@ struct PrivacyVaultPage {
               .padding({ left: 18, right: 18, top: 14, bottom: 32 })
               .width('100%')
             }.edgeEffect(EdgeEffect.Spring)
+            .enableScrollInteraction(!this.patternDrawing)
             .layoutWeight(1)
             .width('100%')
             .align(Alignment.TopStart)

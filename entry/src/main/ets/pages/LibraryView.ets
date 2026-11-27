@@ -445,8 +445,8 @@ export struct LibraryView {
               action: () => { this.store.importLocalVideos(); }
             },
             {
-              value: '添加本机文件夹',
-              action: () => { this.store.importLocalFolder(); }
+              value: '添加本机视频 / 文件夹',
+              action: () => { this.store.pickLocalMedia(); }
             },
             {
               value: this.store.vaultUnlocked ? '锁定私密空间' : '私密文件夹解锁 / 管理',
@@ -625,7 +625,7 @@ export struct LibraryView {
               compact: true,
               onPlayAlbum: (album: MusicAlbum) => this.onPlayAlbum(album),
               onOpenPlayer: () => this.onOpenMusicPlayer(),
-              onImportFolder: () => { this.store.importLocalFolder(); }
+              onImportFolder: () => { this.store.pickLocalMedia(); }
             })
           }
           .width('100%')
