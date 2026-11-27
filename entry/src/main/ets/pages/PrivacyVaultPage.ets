@@ -14,7 +14,6 @@ struct PrivacyVaultPage {
   @Local statusText: string = '';
   @Local isError: boolean = false;
   @Local showChangePattern: boolean = false;
-  @Local patternDrawing: boolean = false;
   @Local changeStage: ChangeStage = 'old';
   @Local newPattern: string = '';
   @Local busy: boolean = false;
@@ -132,8 +131,7 @@ struct PrivacyVaultPage {
       PatternPad({
         padSize: 250,
         onComplete: (pattern: string) => { this.onPattern(pattern); },
-        onInvalid: (message: string) => { this.showStatus(message, true); },
-        onDrawingChange: (drawing: boolean) => { this.patternDrawing = drawing; }
+        onInvalid: (message: string) => { this.showStatus(message, true); }
       })
       if (this.statusText) {
         Text(this.statusText)
@@ -221,81 +219,84 @@ struct PrivacyVaultPage {
 
       Stack() {
         PageShell({ maxWidth: 760 }) {
-          Column() {
-
-            Scroll() {
-              Column({ space: 16 }) {
-                if (!this.store.hasVaultPattern() || !this.store.vaultUnlocked) {
-                  this.patternCard(this.store.hasVaultPattern() ? '绘制图案解锁' : this.setupPrompt())
-                } else {
-                  Row({ space: 10 }) {
-                    Button('立即上锁')
-                    .layoutWeight(1)
-                    .height(42)
-                    .fontSize(13)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor(Color.Black)
-                    .backgroundColor($r('app.color.accent_gold'))
-                    .borderRadius(10)
-                    .onClick(() => {
-                      this.store.lockVault();
-                      this.showChangePattern = false;
-                      this.statusText = '';
-                    })
-
-                    Button(this.showChangePattern ? '收起' : '修改图案')
-                    .height(42)
-                    .padding({ left: 16, right: 16 })
-                    .fontSize(13)
-                    .fontColor($r('app.color.text_primary'))
-                    .backgroundColor($r('app.color.bg_elevated'))
-                    .borderRadius(10)
-                    .border({ width: 0.7, color: $r('app.color.fill_strong') })
-                    .onClick(() => this.toggleChangePattern())
-                  }
-                  .width('100%')
-
-                  if (this.showChangePattern) {
-                    this.patternCard(this.changePrompt())
-                  }
-
-                  Column({ space: 10 }) {
-                    Text(`已隐藏内容 (${this.store.vaultEntries.length})`)
-                    .fontSize(13)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor($r('app.color.text_secondary'))
-
-                    if (this.store.vaultEntries.length === 0) {
-                      Text('暂无隐藏内容')
-                      .fontSize(12)
-                      .fontColor($r('app.color.text_body_muted'))
-                    } else {
-                      ForEach(this.store.vaultEntries, (entry: VaultEntry) => {
-                        this.vaultEntryRow(entry)
-                      }, (e: VaultEntry) => e.id)
-                    }
-
-                    Text('隐藏不会修改原文件。')
-                    .fontSize(11)
-                    .fontColor($r('app.color.text_body_muted'))
-                  }
-                  .width('100%')
-                  .alignItems(HorizontalAlign.Start)
-                }
-
-              }
-              .padding({ left: 18, right: 18, top: 14, bottom: 32 })
-              .width('100%')
-            }.edgeEffect(EdgeEffect.Spring)
-            .enableScrollInteraction(!this.patternDrawing)
-            .layoutWeight(1)
+          if (!this.store.hasVaultPattern() || !this.store.vaultUnlocked) {
+            // 解锁/设置图案是固定操作区，不跟随页面滚动
+            Column() {
+              this.patternCard(this.store.hasVaultPattern() ? '绘制图案解锁' : this.setupPrompt())
+            }
             .width('100%')
-            .align(Alignment.TopStart)
-            .scrollBar(BarState.Off)
+            .height('100%')
+            .justifyContent(FlexAlign.Center)
+            .padding({ left: 18, right: 18, bottom: 32 })
+          } else {
+            Column({ space: 12 }) {
+              Row({ space: 10 }) {
+                Button('立即上锁')
+                  .layoutWeight(1)
+                  .height(42)
+                  .fontSize(13)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(Color.Black)
+                  .backgroundColor($r('app.color.accent_gold'))
+                  .borderRadius(10)
+                  .onClick(() => {
+                    this.store.lockVault();
+                    this.showChangePattern = false;
+                    this.statusText = '';
+                  })
+
+                Button(this.showChangePattern ? '收起' : '修改图案')
+                  .height(42)
+                  .padding({ left: 16, right: 16 })
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_primary'))
+                  .backgroundColor($r('app.color.bg_elevated'))
+                  .borderRadius(10)
+                  .border({ width: 0.7, color: $r('app.color.fill_strong') })
+                  .onClick(() => this.toggleChangePattern())
+              }
+              .width('100%')
+
+              if (this.showChangePattern) {
+                this.patternCard(this.changePrompt())
+              }
+
+              Row() {
+                Text(`已隐藏内容 (${this.store.vaultEntries.length})`)
+                  .fontSize(13)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor($r('app.color.text_secondary'))
+                Blank()
+              }
+              .width('100%')
+
+              if (this.store.vaultEntries.length === 0) {
+                Text('暂无隐藏内容')
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_body_muted'))
+              } else {
+                List({ space: 8 }) {
+                  ForEach(this.store.vaultEntries, (entry: VaultEntry) => {
+                    ListItem() {
+                      this.vaultEntryRow(entry)
+                    }
+                  }, (e: VaultEntry) => e.id)
+                }
+                .layoutWeight(1)
+                .width('100%')
+                .scrollBar(BarState.Off)
+                .edgeEffect(EdgeEffect.Spring)
+              }
+
+              Text('隐藏不会修改原文件。')
+                .fontSize(11)
+                .fontColor($r('app.color.text_body_muted'))
+            }
+            .width('100%')
+            .height('100%')
+            .padding({ left: 18, right: 18, top: 14, bottom: 24 })
+            .alignItems(HorizontalAlign.Start)
           }
-          .width('100%')
-          .height('100%')
-          .backgroundColor($r('app.color.bg_primary'))
         }
       }
       .width('100%')

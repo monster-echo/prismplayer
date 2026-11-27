@@ -7,8 +7,6 @@ export struct PatternPad {
   @Param padSize: number = 240;
   @Param onComplete: (pattern: string) => void = (_pattern: string) => {};
   @Param onInvalid: (message: string) => void = (_message: string) => {};
-  /** 画线期间通知外层锁住滚动，否则手指会被 Scroll 抢走。 */
-  @Param onDrawingChange: (drawing: boolean) => void = (_drawing: boolean) => {};
 
   @Local selected: number[] = [];
   @Local drawing: boolean = false;
@@ -143,7 +141,6 @@ export struct PatternPad {
       this.cursorY = touch.y;
     }
     if (event.type === TouchType.Down) {
-      this.onDrawingChange(true);
       this.selected = [];
       this.drawing = true;
       if (touch) {
@@ -160,7 +157,6 @@ export struct PatternPad {
       this.draw();
     } else if (event.type === TouchType.Up) {
       this.drawing = false;
-      this.onDrawingChange(false);
       this.draw();
       const pattern = this.selected.map((v: number) => `${v + 1}`).join('');
       if (pattern.length < 4) {
@@ -172,7 +168,6 @@ export struct PatternPad {
       this.scheduleReset(450);
     } else if (event.type === TouchType.Cancel) {
       this.drawing = false;
-      this.onDrawingChange(false);
       this.resetPattern();
     }
   }
